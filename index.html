@@ -676,7 +676,13 @@ function ItemsPage() {
                       <input value={compSearch} onChange={e=>setCompSearch(e.target.value)} placeholder="품목 검색..." style={{background:"none",border:"none",color:C.text,fontSize:12,outline:"none",flex:1}}/>
                     </div>
                     <div style={{maxHeight:180,overflowY:"auto"}}>
-                      {items.filter(it=>!compSearch||it.name.includes(compSearch)||it.color.includes(compSearch)||it.barcode.includes(compSearch)).map(item=>{
+                      {items.filter(it=>{
+                        if(!compSearch) return true;
+                        const q=compSearch.toLowerCase();
+                        return it.name.toLowerCase().includes(q)
+                          || (it.barcode||"").toLowerCase().includes(q)
+                          || resolveColor(it).toLowerCase().includes(q);
+                      }).map(item=>{
                         const alreadyIn=sForm.components.find(c=>c.itemId===item.id);
                         const dc = resolveColor(item);
                         return (
