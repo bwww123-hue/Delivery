@@ -250,13 +250,36 @@ function CalendarSidebar({ selectedDate, onSelect, deliveries }) {
 
 // ── DeliveryModal ──────────────────────────────────────────────────────────
 function DeliveryModal({ onClose, onSave, init }) {
-  const blank={deliveryDate:today(),store:"",customerName:"",phone:"",address:"",color:"",items:"",notes:"",rowColor:"#1e293b",status:"pending",productImage:null};
+  const {items:allItems, sets:allSets} = useContext(AppCtx);
+  const blank={deliveryDate:today(),store:"",customerName:"",phone:"",address:"",color:"",notes:"",rowColor:"#1e293b",status:"pending",productImage:null};
   const [f,setF]=useState(init||blank);
-  const s=(k,v)=>setF(p=>({...p,[k]:v}));
+  const sv=(k,v)=>setF(p=>({...p,[k]:v}));
+
+  // 주문 품목 피커
+  const [pickedItems, setPickedItems]=useState(()=>init?.itemsList||[]);
+  const [pickSearch, setPickSearch]=useState("");
+  const pickable=[
+    ...allSets.map(st=>({id:st.id,name:st.name,barcode:st.barcode,type:'set',stock:9999})),
+    ...allItems.map(it=>({id:it.id,name:it.name,barcode:it.barcode,color:resolveColor(it),type:'item',stock:it.stock})),
+  ];
+  const filteredPickable=pickable.filter(it=>{
+    if(!pickSearch) return true;
+    const q=pickSearch.toLowerCase();
+    return it.name.toLowerCase().includes(q)||(it.barcode||"").toLowerCase().includes(q);
+  });
+  const addToPick=item=>{
+    const ex=pickedItems.findIndex(p=>p.id===item.id);
+    if(ex>=0) setPickedItems(p=>p.map((pi,i)=>i===ex?{...pi,qty:pi.qty+1}:pi));
+    else setPickedItems(p=>[...p,{id:item.id,name:item.name,barcode:item.barcode,type:item.type,qty:1}]);
+  };
+  const changePickQty=(idx,delta)=>setPickedItems(p=>p.map((pi,i)=>i===idx?{...pi,qty:Math.max(1,pi.qty+delta)}:pi));
+
   const imgRef=useRef();
   const ROW_COLORS=["#1e293b","#0d2744","#0d2a1a","#2a1010","#1a1030","#2a2010"];
   const IS={width:"100%",background:C.bg,border:`1px solid ${C.border2}`,borderRadius:6,color:C.text,padding:"8px 10px",fontSize:13,boxSizing:"border-box",outline:"none"};
   const LS={color:C.muted2,fontSize:11,display:"block",marginBottom:4};
+  const BS={width:24,height:24,borderRadius:4,background:C.border2,color:C.text,border:"none",cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700};
+
   const handleImage=e=>{
     const file=e.target.files[0]; if(!file) return;
     const reader=new FileReader();
@@ -267,65 +290,122 @@ function DeliveryModal({ onClose, onSave, init }) {
         const canvas=document.createElement("canvas");
         canvas.width=Math.round(img.width*scale);canvas.height=Math.round(img.height*scale);
         canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);
-        s("productImage",canvas.toDataURL("image/jpeg",0.75));
+        sv("productImage",canvas.toDataURL("image/jpeg",0.75));
       };
       img.src=ev.target.result;
     };
     reader.readAsDataURL(file); e.target.value="";
   };
+
+  const handleSave=()=>{
+    if(!f.customerName||!f.deliveryDate) return;
+    const itemsStr=pickedItems.map(p=>`${p.name} ×${p.qty}`).join(', ');
+    onSave({...f, items:itemsStr, itemsList:pickedItems});
+  };
+
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{background:C.card2,borderRadius:14,width:600,maxHeight:"92vh",overflow:"auto",border:`1px solid ${C.border2}`}}>
+      <div style={{background:C.card2,borderRadius:14,width:640,maxHeight:"92vh",overflow:"auto",border:`1px solid ${C.border2}`}}>
         <div style={{padding:"18px 22px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",position:"sticky",top:0,background:C.card2,zIndex:1}}>
           <h2 style={{color:C.text,fontSize:16,fontWeight:700,margin:0}}>{init?"✏️ 배송 수정":"📦 배송 일정 추가"}</h2>
           <button onClick={onClose} style={{background:"none",border:"none",color:C.muted,cursor:"pointer"}}><IcX s={18}/></button>
         </div>
         <div style={{padding:22,display:"grid",gap:13}}>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <div><label style={LS}>배송일 *</label><input type="date" value={f.deliveryDate} onChange={e=>s("deliveryDate",e.target.value)} style={IS}/></div>
-            <div><label style={LS}>구입처</label><input type="text" value={f.store} onChange={e=>s("store",e.target.value)} placeholder="이케아 고양점" style={IS}/></div>
+            <div><label style={LS}>배송일 *</label><input type="date" value={f.deliveryDate} onChange={e=>sv("deliveryDate",e.target.value)} style={IS}/></div>
+            <div><label style={LS}>구입처</label><input type="text" value={f.store} onChange={e=>sv("store",e.target.value)} placeholder="이케아 고양점" style={IS}/></div>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <div><label style={LS}>고객명 *</label><input type="text" value={f.customerName} onChange={e=>s("customerName",e.target.value)} placeholder="홍길동" style={IS}/></div>
-            <div><label style={LS}>연락처</label><input type="text" value={f.phone} onChange={e=>s("phone",e.target.value)} placeholder="010-0000-0000" style={IS}/></div>
+            <div><label style={LS}>고객명 *</label><input type="text" value={f.customerName} onChange={e=>sv("customerName",e.target.value)} placeholder="홍길동" style={IS}/></div>
+            <div><label style={LS}>연락처</label><input type="text" value={f.phone} onChange={e=>sv("phone",e.target.value)} placeholder="010-0000-0000" style={IS}/></div>
           </div>
-          <div><label style={LS}>주소</label><input type="text" value={f.address} onChange={e=>s("address",e.target.value)} placeholder="배송지 주소" style={IS}/></div>
+          <div><label style={LS}>주소</label><input type="text" value={f.address} onChange={e=>sv("address",e.target.value)} placeholder="배송지 주소" style={IS}/></div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <div><label style={LS}>색상</label><input type="text" value={f.color} onChange={e=>s("color",e.target.value)} placeholder="오크 브라운" style={IS}/></div>
+            <div><label style={LS}>색상</label><input type="text" value={f.color} onChange={e=>sv("color",e.target.value)} placeholder="오크 브라운" style={IS}/></div>
             <div><label style={LS}>상태</label>
-              <select value={f.status} onChange={e=>s("status",e.target.value)} style={IS}>
+              <select value={f.status} onChange={e=>sv("status",e.target.value)} style={IS}>
                 <option value="pending">대기중</option><option value="inprogress">배송중</option><option value="completed">완료</option>
               </select>
             </div>
           </div>
-          <div><label style={LS}>주문 품목</label><textarea value={f.items} onChange={e=>s("items",e.target.value)} placeholder="소파 3인용 ×1, 쿠션 ×4" rows={2} style={{...IS,resize:"vertical"}}/></div>
-          <div><label style={LS}>기타 메모</label><textarea value={f.notes} onChange={e=>s("notes",e.target.value)} placeholder="특이사항" rows={2} style={{...IS,resize:"vertical"}}/></div>
+
+          {/* ── 주문 품목 피커 ── */}
+          <div>
+            <label style={LS}>주문 품목 <span style={{color:C.muted,fontWeight:400}}>— 바코드 검색 또는 클릭으로 추가</span></label>
+
+            {/* 선택된 품목 목록 */}
+            {pickedItems.length>0&&(
+              <div style={{display:"flex",flexDirection:"column",gap:5,marginBottom:8}}>
+                {pickedItems.map((p,idx)=>(
+                  <div key={idx} style={{display:"flex",alignItems:"center",gap:8,background:C.bg,border:`1px solid ${C.border2}`,padding:"7px 10px",borderRadius:7}}>
+                    <span style={{fontSize:14}}>{p.type==='set'?'🧩':'📦'}</span>
+                    <span style={{flex:1,color:C.text,fontWeight:600,fontSize:13}}>{p.name}</span>
+                    {p.barcode&&<span style={{color:"#93c5fd",fontSize:10,fontFamily:"monospace"}}>{p.barcode}</span>}
+                    <button style={BS} onClick={()=>changePickQty(idx,-1)}>−</button>
+                    <span style={{color:C.accent,fontWeight:800,fontSize:14,minWidth:22,textAlign:"center"}}>×{p.qty}</span>
+                    <button style={BS} onClick={()=>changePickQty(idx,+1)}>+</button>
+                    <button onClick={()=>setPickedItems(p=>p.filter((_,i)=>i!==idx))} style={{background:"none",border:"none",color:C.red,cursor:"pointer",display:"flex",padding:2}}><IcX s={13}/></button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* 검색 + 피커 */}
+            <div style={{border:`1px solid ${C.border2}`,borderRadius:8,overflow:"hidden"}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,padding:"7px 10px",background:C.bg,borderBottom:`1px solid ${C.border}`}}>
+                <span style={{display:"flex",color:C.muted,flexShrink:0}}><IcSearch s={12}/></span>
+                <input value={pickSearch} onChange={e=>setPickSearch(e.target.value)}
+                  placeholder="바코드 또는 품목명 입력…"
+                  style={{background:"none",border:"none",color:C.text,fontSize:12,outline:"none",flex:1}}/>
+              </div>
+              <div style={{maxHeight:160,overflowY:"auto"}}>
+                {filteredPickable.length===0&&<div style={{padding:14,textAlign:"center",color:C.muted,fontSize:12}}>품목 또는 세트를 먼저 등록하세요</div>}
+                {filteredPickable.map(item=>{
+                  const already=pickedItems.find(p=>p.id===item.id);
+                  return (
+                    <button key={item.id} onClick={()=>addToPick(item)}
+                      style={{display:"flex",alignItems:"center",width:"100%",textAlign:"left",padding:"8px 12px",background:already?C.border+"44":"transparent",border:"none",borderBottom:`1px solid ${C.border}22`,cursor:"pointer",gap:8,fontFamily:"inherit"}}
+                      onMouseEnter={e=>e.currentTarget.style.background=C.border2}
+                      onMouseLeave={e=>e.currentTarget.style.background=already?C.border+"44":"transparent"}>
+                      <span style={{fontSize:13}}>{item.type==='set'?'🧩':'📦'}</span>
+                      <span style={{flex:1,color:C.text,fontWeight:600,fontSize:13}}>{item.name}</span>
+                      <span style={{color:"#93c5fd",fontSize:10,fontFamily:"monospace"}}>{item.barcode}</span>
+                      {item.stock<9999&&<span style={{color:item.stock>0?C.green:C.red,fontSize:11,fontWeight:700,minWidth:40,textAlign:"right"}}>재고 {item.stock}</span>}
+                      {already?<span style={{color:C.accent,fontSize:11,fontWeight:700,minWidth:30,textAlign:"right"}}>×{already.qty}</span>:<span style={{display:"flex",color:C.green,flexShrink:0}}><IcPlus s={12}/></span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          <div><label style={LS}>기타 메모</label><textarea value={f.notes} onChange={e=>sv("notes",e.target.value)} placeholder="특이사항" rows={2} style={{...IS,resize:"vertical"}}/></div>
           <div>
             <label style={LS}>제품 사진</label>
             <input ref={imgRef} type="file" accept="image/*" onChange={handleImage} style={{display:"none"}}/>
             {f.productImage?(
               <div style={{position:"relative",display:"inline-block"}}>
                 <img src={f.productImage} alt="제품" style={{width:160,height:160,objectFit:"cover",borderRadius:8,border:`2px solid ${C.border2}`,display:"block"}}/>
-                <button onClick={()=>s("productImage",null)} style={{position:"absolute",top:6,right:6,width:24,height:24,borderRadius:"50%",background:"rgba(0,0,0,0.7)",border:"none",color:"#fff",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}><IcX s={12}/></button>
+                <button onClick={()=>sv("productImage",null)} style={{position:"absolute",top:6,right:6,width:24,height:24,borderRadius:"50%",background:"rgba(0,0,0,0.7)",border:"none",color:"#fff",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}><IcX s={12}/></button>
                 <button onClick={()=>imgRef.current.click()} style={{position:"absolute",bottom:6,right:6,padding:"4px 8px",borderRadius:5,background:"rgba(0,0,0,0.65)",border:`1px solid ${C.border2}`,color:C.muted2,cursor:"pointer",fontSize:10}}>변경</button>
               </div>
             ):(
-              <button onClick={()=>imgRef.current.click()} style={{width:"100%",height:110,background:C.bg,border:`2px dashed ${C.border2}`,borderRadius:8,color:C.muted,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:8,fontSize:13}}>
-                <span style={{fontSize:28}}>📷</span><span>클릭하여 사진 첨부</span>
+              <button onClick={()=>imgRef.current.click()} style={{width:"100%",height:90,background:C.bg,border:`2px dashed ${C.border2}`,borderRadius:8,color:C.muted,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,fontSize:13}}>
+                <span style={{fontSize:24}}>📷</span><span>클릭하여 사진 첨부</span>
               </button>
             )}
           </div>
           <div>
             <label style={LS}>행 배경색</label>
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-              {ROW_COLORS.map(c=><button key={c} onClick={()=>s("rowColor",c)} style={{width:30,height:30,borderRadius:5,background:c,border:f.rowColor===c?`3px solid ${C.accent}`:`2px solid ${C.border2}`,cursor:"pointer"}}/>)}
-              <input type="color" value={f.rowColor} onChange={e=>s("rowColor",e.target.value)} style={{width:30,height:30,borderRadius:5,border:`2px solid ${C.border2}`,cursor:"pointer",padding:2,background:C.bg}}/>
+              {ROW_COLORS.map(c=><button key={c} onClick={()=>sv("rowColor",c)} style={{width:30,height:30,borderRadius:5,background:c,border:f.rowColor===c?`3px solid ${C.accent}`:`2px solid ${C.border2}`,cursor:"pointer"}}/>)}
+              <input type="color" value={f.rowColor} onChange={e=>sv("rowColor",e.target.value)} style={{width:30,height:30,borderRadius:5,border:`2px solid ${C.border2}`,cursor:"pointer",padding:2,background:C.bg}}/>
             </div>
           </div>
         </div>
         <div style={{padding:"14px 22px",borderTop:`1px solid ${C.border}`,display:"flex",gap:8,justifyContent:"flex-end",position:"sticky",bottom:0,background:C.card2}}>
           <button onClick={onClose} style={{padding:"9px 18px",background:C.border2,color:C.muted2,border:"none",borderRadius:7,cursor:"pointer",fontSize:13}}>취소</button>
-          <button onClick={()=>{if(!f.customerName||!f.deliveryDate)return;onSave(f);}} style={{padding:"9px 18px",background:C.accent,color:"#000",border:"none",borderRadius:7,cursor:"pointer",fontWeight:700,fontSize:13}}>
+          <button onClick={handleSave} style={{padding:"9px 18px",background:C.accent,color:"#000",border:"none",borderRadius:7,cursor:"pointer",fontWeight:700,fontSize:13}}>
             {init?"수정 완료":"추가"}
           </button>
         </div>
@@ -385,7 +465,13 @@ function DeliveryPage() {
   const dragFrom=useRef(null),dragTo=useRef(null);
   const base=selDate?deliveries.filter(d=>d.deliveryDate===selDate):deliveries;
   const list=search?base.filter(d=>d.customerName.includes(search)||d.address.includes(search)||d.store.includes(search)||d.items.includes(search)):base;
-  const save=async form=>{if(editDel)await updateDelivery(editDel.id,form);else await addDelivery(form);setShowAdd(false);setEditDel(null);};
+  const save=async form=>{
+    setShowAdd(false);setEditDel(null); // 먼저 닫기
+    try{
+      if(editDel) await updateDelivery(editDel.id,form);
+      else await addDelivery(form);
+    }catch(e){}
+  };
   const bulkDelete=async()=>{await bulkDeleteDeliveries(checked);setChecked(new Set());};
   const toggle=id=>setChecked(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);return n;});
   const toggleAll=()=>setChecked(checked.size===list.length&&list.length>0?new Set():new Set(list.map(d=>d.id)));
@@ -495,13 +581,20 @@ function ItemsPage() {
   const openEditSet=st=>{setEditSet(st);setSForm({name:st.name,barcode:st.barcode,notes:st.notes,components:[...st.components]});setShowSetModal(true);};
   const saveItem=async()=>{
     if(!iForm.name) return;
-    if(editItem) await updateItem(editItem.id,iForm); else await addItem(iForm);
+    const data={...iForm};
     setShowItemModal(false);setEditItem(null);setIForm({name:"",color:"",barcode:"",stock:0});
+    try{
+      if(editItem) await updateItem(editItem.id,data); else await addItem(data);
+    }catch(e){}
   };
   const saveSet=async()=>{
     if(!sForm.name) return;
-    if(editSet) await updateSet(editSet.id,sForm); else await addSet(sForm);
-    setShowSetModal(false);setEditSet(null);setSForm({name:"",barcode:"",notes:"",components:[]});setCompSearch("");
+    const data={...sForm};
+    setShowSetModal(false);setEditSet(null);
+    setSForm({name:"",barcode:"",notes:"",components:[]});setCompSearch("");
+    try{
+      if(editSet) await updateSet(editSet.id,data); else await addSet(data);
+    }catch(e){}
   };
   const addComp=item=>{
     const ex=sForm.components.findIndex(c=>c.itemId===item.id);
@@ -712,17 +805,43 @@ function ItemsPage() {
 
 // ── 루트 App ───────────────────────────────────────────────────────────────
 function App() {
+  // Firestore가 유일한 저장소 — 초기값은 빈 배열 (onSnapshot이 채워줌)
   const [deliveries,setDeliveries]=useState([]);
   const [delLoading,setDelLoading]=useState(true);
-  const [items,setItems]=useState(ITEMS_SEED.map(i=>({...i,id:genId()})));
-  const [sets,setSets]=useState(SETS_SEED.map(s=>({...s,id:genId()})));
+  const [items,setItems]=useState([]);
+  const [sets,setSets]=useState([]);
   const [page,setPage]=useState("delivery");
   const [fontSize,setFontSize]=useState(13);
   const [fbStatus,setFbStatus]=useState("connecting");
   const [fbError,setFbError]=useState("");
+  const [writeError,setWriteError]=useState(""); // CRUD 실패 알림
   const [whStatus,setWhStatus]=useState("connecting");
   const [fromWarehouse,setFromWarehouse]=useState(false);
-  const [showErrDetail,setShowErrDetail]=useState(false);
+
+  // Firestore 연결 타임아웃 — 8초 내 연결 안 되면 에러 표시
+  useEffect(()=>{
+    const t=setTimeout(()=>{
+      if(fbStatus==='connecting'){
+        setFbStatus('error');
+        setFbError('Firestore 연결 시간 초과 (8초). Firebase 콘솔에서 Firestore Database가 활성화되어 있는지, 보안 규칙이 올바른지 확인하세요.');
+      }
+    },8000);
+    return()=>clearTimeout(t);
+  },[fbStatus]);
+    if(!writeError) return;
+    const t=setTimeout(()=>setWriteError(""),4000);
+    return()=>clearTimeout(t);
+  },[writeError]);
+
+  // Firestore 쓰기 에러 래퍼
+  const fsWrite = useCallback(async(fn, label="저장")=>{
+    try { await fn(); }
+    catch(e) {
+      console.error("Firestore 쓰기 오류:", e);
+      setWriteError(`${label} 실패: ${e.code||e.message||String(e)}`);
+      throw e;
+    }
+  },[]);
 
   // ── Firestore 실시간 리스너 ──────────────────────────────────────────
   useEffect(()=>{
@@ -731,7 +850,14 @@ function App() {
 
     // 배송 목록
     unsubs.push(
-      fsDb.collection('deliveries').orderBy('order','asc').onSnapshot(snap=>{
+      fsDb.collection('deliveries').orderBy('order','asc').onSnapshot(async snap=>{
+        // 첫 연결 시 빈 DB면 시드 데이터 입력
+        if(snap.empty){
+          const batch=fsDb.batch();
+          DELIVERIES_SEED.forEach(d=>batch.set(fsDb.collection('deliveries').doc(),d));
+          try{ await batch.commit(); }catch(e){ console.error('seed deliveries:',e); }
+          return;
+        }
         const data=snap.docs.map(d=>({order:9999,...d.data(),id:d.id})).sort((a,b)=>a.order-b.order);
         setDeliveries(data);
         setDelLoading(false);
@@ -745,18 +871,30 @@ function App() {
       })
     );
 
-    // 품목 (창고 미연동 시)
+    // 품목
     unsubs.push(
-      fsDb.collection('items').onSnapshot(snap=>{
+      fsDb.collection('items').onSnapshot(async snap=>{
+        if(snap.empty && !fromWarehouse){
+          const batch=fsDb.batch();
+          ITEMS_SEED.forEach(i=>batch.set(fsDb.collection('items').doc(),i));
+          try{ await batch.commit(); }catch(e){ console.error('seed items:',e); }
+          return;
+        }
         if(!fromWarehouse) setItems(snap.docs.map(d=>({...d.data(),id:d.id})));
-      }, console.error)
+      }, err=>{ console.error('items:',err); setWriteError('품목 불러오기 실패: '+err.message); })
     );
 
     // 세트
     unsubs.push(
-      fsDb.collection('sets').onSnapshot(snap=>{
+      fsDb.collection('sets').onSnapshot(async snap=>{
+        if(snap.empty){
+          const batch=fsDb.batch();
+          SETS_SEED.forEach(s=>batch.set(fsDb.collection('sets').doc(),s));
+          try{ await batch.commit(); }catch(e){ console.error('seed sets:',e); }
+          return;
+        }
         setSets(snap.docs.map(d=>({...d.data(),id:d.id})));
-      }, console.error)
+      }, err=>{ console.error('sets:',err); setWriteError('세트 불러오기 실패: '+err.message); })
     );
 
     // Realtime Database — 창고 품목 실시간 연동
@@ -783,36 +921,64 @@ function App() {
 
   // ── 배송 CRUD ─────────────────────────────────────────────────────────
   const addDelivery=useCallback(async form=>{
-    await fsDb.collection('deliveries').add({...form,order:deliveries.length+1,createdAt:firebase.firestore.FieldValue.serverTimestamp()});
-  },[deliveries]);
+    // 낙관적 업데이트: 화면에 즉시 표시
+    const tempId='_tmp_'+genId();
+    setDeliveries(p=>[...p,{...form,id:tempId,order:p.length+1}]);
+    await fsWrite(()=>fsDb.collection('deliveries').add({...form,order:deliveries.length+1,createdAt:firebase.firestore.FieldValue.serverTimestamp()}),"배송 추가");
+    // 성공 시 onSnapshot이 tempId를 실제 ID로 교체
+  },[deliveries,fsWrite]);
 
   const updateDelivery=useCallback(async(id,form)=>{
-    await fsDb.collection('deliveries').doc(id).update(form);
-  },[]);
+    setDeliveries(p=>p.map(d=>d.id===id?{...d,...form}:d)); // 낙관적 업데이트
+    await fsWrite(()=>fsDb.collection('deliveries').doc(id).update(form),"배송 수정");
+  },[fsWrite]);
 
   const bulkDeleteDeliveries=useCallback(async ids=>{
-    const batch=fsDb.batch();
-    ids.forEach(id=>batch.delete(fsDb.collection('deliveries').doc(id)));
-    await batch.commit();
-  },[]);
+    setDeliveries(p=>p.filter(d=>!ids.has(d.id))); // 낙관적 업데이트
+    await fsWrite(()=>{
+      const batch=fsDb.batch();
+      ids.forEach(id=>batch.delete(fsDb.collection('deliveries').doc(id)));
+      return batch.commit();
+    },"배송 삭제");
+  },[fsWrite]);
 
   const reorderDeliveries=useCallback(async arr=>{
     const ri=arr.map((d,i)=>({...d,order:i+1}));
     setDeliveries(ri);
-    const batch=fsDb.batch();
-    ri.forEach(d=>batch.update(fsDb.collection('deliveries').doc(d.id),{order:d.order}));
-    await batch.commit();
-  },[]);
+    await fsWrite(()=>{
+      const batch=fsDb.batch();
+      ri.forEach(d=>batch.update(fsDb.collection('deliveries').doc(d.id),{order:d.order}));
+      return batch.commit();
+    },"순서 변경");
+  },[fsWrite]);
 
   // ── 품목 CRUD ─────────────────────────────────────────────────────────
-  const addItem    =useCallback(async form=>{await fsDb.collection('items').add(form);},[]);
-  const updateItem =useCallback(async(id,form)=>{await fsDb.collection('items').doc(id).update(form);},[]);
-  const removeItem =useCallback(async id=>{await fsDb.collection('items').doc(id).delete();},[]);
+  const addItem=useCallback(async form=>{
+    setItems(p=>[...p,{...form,id:'_tmp_'+genId()}]); // 낙관적 업데이트
+    await fsWrite(()=>fsDb.collection('items').add(form),"품목 추가");
+  },[fsWrite]);
+  const updateItem=useCallback(async(id,form)=>{
+    setItems(p=>p.map(i=>i.id===id?{...i,...form}:i));
+    await fsWrite(()=>fsDb.collection('items').doc(id).update(form),"품목 수정");
+  },[fsWrite]);
+  const removeItem=useCallback(async id=>{
+    setItems(p=>p.filter(i=>i.id!==id));
+    await fsWrite(()=>fsDb.collection('items').doc(id).delete(),"품목 삭제");
+  },[fsWrite]);
 
   // ── 세트 CRUD ─────────────────────────────────────────────────────────
-  const addSet    =useCallback(async form=>{await fsDb.collection('sets').add(form);},[]);
-  const updateSet =useCallback(async(id,form)=>{await fsDb.collection('sets').doc(id).update(form);},[]);
-  const removeSet =useCallback(async id=>{await fsDb.collection('sets').doc(id).delete();},[]);
+  const addSet=useCallback(async form=>{
+    setSets(p=>[...p,{...form,id:'_tmp_'+genId()}]); // 낙관적 업데이트
+    await fsWrite(()=>fsDb.collection('sets').add(form),"세트 추가");
+  },[fsWrite]);
+  const updateSet=useCallback(async(id,form)=>{
+    setSets(p=>p.map(s=>s.id===id?{...s,...form}:s));
+    await fsWrite(()=>fsDb.collection('sets').doc(id).update(form),"세트 수정");
+  },[fsWrite]);
+  const removeSet=useCallback(async id=>{
+    setSets(p=>p.filter(s=>s.id!==id));
+    await fsWrite(()=>fsDb.collection('sets').doc(id).delete(),"세트 삭제");
+  },[fsWrite]);
 
   const STATUS={
     connecting:{dot:C.accent,label:"연결 중..."},
@@ -867,6 +1033,14 @@ function App() {
           </span>
           <span style={{color:C.muted,fontSize:9}}>가구 배송 관리 시스템 v3.0 | 행 드래그로 순서 변경</span>
         </div>
+
+        {/* ── Firestore 쓰기 오류 토스트 ── */}
+        {writeError && (
+          <div style={{position:"fixed",bottom:28,left:"50%",transform:"translateX(-50%)",background:"#3a1010",border:`1px solid ${C.red}66`,borderRadius:10,padding:"12px 20px",color:C.red,fontSize:13,fontWeight:600,zIndex:400,display:"flex",alignItems:"center",gap:10,boxShadow:"0 8px 24px rgba(0,0,0,0.5)",whiteSpace:"nowrap"}}>
+            ⚠️ {writeError}
+            <button onClick={()=>setWriteError("")} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",padding:"0 2px",fontSize:16}}>✕</button>
+          </div>
+        )}
 
         {/* ── Firebase 오류 전체화면 안내 ── */}
         {fbError && (
