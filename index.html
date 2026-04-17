@@ -75,6 +75,19 @@ const C = {
   accent:"#f0a020", accent2:"#fbbf24", blue:"#3b82f6", green:"#22c55e", red:"#ef4444", purple:"#a855f7"
 };
 
+// ── 바코드 접미사 → 색상 자동 매핑 ──────────────────────────────────────
+// 바코드 마지막 세그먼트(하이픈 기준): WH→화이트, OA→오크, BK→블랙, XX/SUS→비움
+function resolveColor(item) {
+  const barcode = (item.barcode || "").toUpperCase();
+  const m = barcode.match(/-([A-Z0-9]+)$/);
+  const suffix = m ? m[1] : barcode;
+  if (suffix === "WH")  return "화이트";
+  if (suffix === "OA")  return "오크";
+  if (suffix === "BK")  return "블랙";
+  if (suffix === "XX" || suffix === "SUS") return "";
+  return item.color || "";
+}
+
 const AppCtx = createContext(null);
 
 // ── 아이콘 (SVG 인라인) ────────────────────────────────────────────────────
@@ -550,11 +563,17 @@ function ItemsPage() {
             <table style={{width:"100%",borderCollapse:"collapse",fontSize}}>
               <thead><tr>{["번호","제품명","색상","바코드","재고","바코드 이미지","관리"].map(h=><th key={h} style={TH}>{h}</th>)}</tr></thead>
               <tbody>
-                {filteredItems.map((item,i)=>(
+                {filteredItems.map((item,i)=>{
+                  const displayColor = resolveColor(item);
+                  return (
                   <tr key={item.id} style={{background:i%2===0?C.card:C.bg}}>
                     <td style={{...TD,color:C.muted,width:46}}>{i+1}</td>
                     <td style={{...TD,fontWeight:600}}>{item.name}</td>
-                    <td style={TD}><span style={{background:C.border,padding:"2px 8px",borderRadius:4,fontSize:11}}>{item.color}</span></td>
+                    <td style={TD}>
+                      {displayColor
+                        ? <span style={{background:C.border,padding:"2px 8px",borderRadius:4,fontSize:11}}>{displayColor}</span>
+                        : <span style={{color:C.muted,fontSize:11}}>—</span>}
+                    </td>
                     <td style={{...TD,fontFamily:"monospace",color:"#93c5fd",fontSize:12}}>{item.barcode}</td>
                     <td style={TD}><span style={{color:item.stock>5?C.green:item.stock>0?C.accent:C.red,fontWeight:700}}>{item.stock}</span></td>
                     <td style={TD}><Barcode value={item.barcode} h={36}/></td>
@@ -565,7 +584,8 @@ function ItemsPage() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
                 {filteredItems.length===0&&<tr><td colSpan={7} style={{textAlign:"center",padding:36,color:C.muted}}>품목이 없습니다.</td></tr>}
               </tbody>
             </table>
@@ -658,9 +678,10 @@ function ItemsPage() {
                     <div style={{maxHeight:180,overflowY:"auto"}}>
                       {items.filter(it=>!compSearch||it.name.includes(compSearch)||it.color.includes(compSearch)||it.barcode.includes(compSearch)).map(item=>{
                         const alreadyIn=sForm.components.find(c=>c.itemId===item.id);
+                        const dc = resolveColor(item);
                         return (
                           <button key={item.id} onClick={()=>addComp(item)} style={{display:"flex",alignItems:"center",width:"100%",textAlign:"left",padding:"9px 12px",background:alreadyIn?C.border+"55":"transparent",border:"none",borderBottom:`1px solid ${C.border}22`,cursor:"pointer",gap:10}} onMouseEnter={e=>e.currentTarget.style.background=C.border2} onMouseLeave={e=>e.currentTarget.style.background=alreadyIn?C.border+"55":"transparent"}>
-                            <div style={{flex:1}}><span style={{color:C.text,fontWeight:600,fontSize:13}}>{item.name}</span><span style={{color:C.muted2,fontSize:11,marginLeft:6}}>{item.color}</span></div>
+                            <div style={{flex:1}}><span style={{color:C.text,fontWeight:600,fontSize:13}}>{item.name}</span>{dc&&<span style={{color:C.muted2,fontSize:11,marginLeft:6}}>{dc}</span>}</div>
                             <span style={{color:"#93c5fd",fontSize:10,fontFamily:"monospace"}}>{item.barcode}</span>
                             <span style={{color:item.stock>0?C.green:C.red,fontSize:11,fontWeight:700,minWidth:32,textAlign:"right"}}>재고 {item.stock}</span>
                             {alreadyIn?<span style={{color:C.accent,fontSize:11,fontWeight:700,minWidth:36,textAlign:"right"}}>×{alreadyIn.qty}</span>:<span style={{display:"flex",color:C.green,flexShrink:0}}><IcPlus s={13}/></span>}
@@ -692,8 +713,10 @@ function App() {
   const [page,setPage]=useState("delivery");
   const [fontSize,setFontSize]=useState(13);
   const [fbStatus,setFbStatus]=useState("connecting");
+  const [fbError,setFbError]=useState("");
   const [whStatus,setWhStatus]=useState("connecting");
   const [fromWarehouse,setFromWarehouse]=useState(false);
+  const [showErrDetail,setShowErrDetail]=useState(false);
 
   // ── Firestore 실시간 리스너 ──────────────────────────────────────────
   useEffect(()=>{
@@ -707,7 +730,13 @@ function App() {
         setDeliveries(data);
         setDelLoading(false);
         setFbStatus("connected");
-      }, err=>{console.error('deliveries:',err);setFbStatus("error");setDelLoading(false);})
+        setFbError("");
+      }, err=>{
+        console.error('Firestore 오류:',err);
+        setFbStatus("error");
+        setFbError(err.message||String(err));
+        setDelLoading(false);
+      })
     );
 
     // 품목 (창고 미연동 시)
@@ -832,6 +861,41 @@ function App() {
           </span>
           <span style={{color:C.muted,fontSize:9}}>가구 배송 관리 시스템 v3.0 | 행 드래그로 순서 변경</span>
         </div>
+
+        {/* ── Firebase 오류 전체화면 안내 ── */}
+        {fbError && (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+            <div style={{background:C.card2,borderRadius:14,width:"100%",maxWidth:560,border:`2px solid ${C.red}88`,padding:28}}>
+              <div style={{color:C.red,fontSize:18,fontWeight:800,marginBottom:12}}>🚫 Firebase 연결 실패</div>
+              <div style={{background:"#1a0808",borderRadius:8,padding:12,fontFamily:"monospace",fontSize:11,color:"#f87171",marginBottom:20,wordBreak:"break-all",lineHeight:1.6}}>{fbError}</div>
+
+              <div style={{color:C.text,fontWeight:700,fontSize:14,marginBottom:8}}>✅ 해결법 — Firestore 보안 규칙 설정</div>
+              <div style={{color:C.muted2,fontSize:12,marginBottom:10,lineHeight:1.8}}>
+                <a href="https://console.firebase.google.com" target="_blank" rel="noreferrer" style={{color:C.blue}}>Firebase 콘솔</a>{" "}
+                → 프로젝트 선택 → 왼쪽 <b style={{color:C.text}}>Firestore Database</b> → 상단 <b style={{color:C.text}}>규칙</b> 탭 → 아래 내용으로 교체 후 <b style={{color:C.green}}>게시</b>
+              </div>
+              <pre style={{background:"#0a1a0f",borderRadius:8,padding:12,fontFamily:"monospace",fontSize:12,color:"#86efac",marginBottom:20,lineHeight:1.7,overflowX:"auto"}}>{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}`}</pre>
+              <div style={{display:"flex",gap:10}}>
+                <a href="https://console.firebase.google.com/project/rebrix-warehouse/firestore/rules"
+                   target="_blank" rel="noreferrer"
+                   style={{flex:1,display:"flex",justifyContent:"center",padding:"11px 0",background:C.green,color:"#000",borderRadius:8,fontWeight:700,fontSize:14,textDecoration:"none"}}>
+                  🔧 규칙 설정 바로가기
+                </a>
+                <button onClick={()=>window.location.reload()}
+                  style={{flex:1,padding:"11px 0",background:C.border2,color:C.text,border:"none",borderRadius:8,fontWeight:700,fontSize:14,cursor:"pointer"}}>
+                  설정 후 새로고침
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </AppCtx.Provider>
   );
