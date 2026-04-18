@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
-<title>가구 배송 관리 시스템</title>
+<title>레브릭스 배송 관리 시스템</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700;800&display=swap">
 <style>
@@ -13,9 +13,8 @@ body{background:#0a0f1e;font-family:'Noto Sans KR','Apple SD Gothic Neo',sans-se
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 input,select,textarea,button{font-family:'Noto Sans KR','Apple SD Gothic Neo',sans-serif}
 </style>
-<!-- Firebase compat SDK (빌드 불필요, CDN 로드) -->
+<!-- Firebase SDK (app + Realtime Database만 사용) -->
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
 <!-- React 18 UMD -->
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -39,13 +38,26 @@ firebase.initializeApp({
   appId:             "1:67742153266:web:a2bac5b41f2837b03d1a2b",
   databaseURL:       "https://rebrix-warehouse-default-rtdb.firebaseio.com",
 });
-const fsDb = firebase.firestore();
+// Realtime Database만 사용 (Firestore 불필요)
 const rtDb = firebase.database();
 
 // ── 상수 ──────────────────────────────────────────────────────────────────
 const WH_WS = "warehouse1";
 const genId = () => Math.random().toString(36).substr(2,9).toUpperCase();
 const today = () => new Date().toISOString().split("T")[0];
+
+// 전화번호 자동 포맷: 01012345678 → 010-1234-5678
+const formatPhone = p => {
+  if(!p) return "—";
+  const n=p.replace(/\D/g,"");
+  if(n.length===11) return `${n.slice(0,3)}-${n.slice(3,7)}-${n.slice(7)}`;
+  if(n.length===10){
+    if(n.startsWith("02")) return `${n.slice(0,2)}-${n.slice(2,6)}-${n.slice(6)}`;
+    return `${n.slice(0,3)}-${n.slice(3,6)}-${n.slice(6)}`;
+  }
+  if(n.length===9&&n.startsWith("02")) return `${n.slice(0,2)}-${n.slice(2,5)}-${n.slice(5)}`;
+  return p; // 패턴 미일치 → 원본
+};
 
 const DELIVERIES_SEED = [
   { order:1, deliveryDate:"2026-04-17", store:"이케아 고양점",  customerName:"김민준", phone:"010-1234-5678", address:"경기도 고양시 일산동구 중산로 123", color:"오크 브라운", items:"소파 3인용 ×1, 쿠션 ×4",      notes:"현관까지만",     rowColor:"#0d2744", status:"pending"    },
@@ -68,6 +80,16 @@ const SETS_SEED = [
   { name:"모듈 식탁 세트", barcode:"SET-DT004", notes:"4인 식탁 + 의자", components:[{name:"식탁 4인용",color:"오크",qty:1},{name:"의자",color:"블랙",qty:4}] },
   { name:"침실 풀 세트",   barcode:"SET-BD-Q",  notes:"퀸 침대 + 협탁 2개", components:[{name:"침대 퀸",color:"그레이",qty:1},{name:"협탁",color:"화이트",qty:2}] },
 ];
+const STORES_SEED = ["이케아 고양점","한샘몰","현대리바트","일룸","에이스침대","리바트","까사미아","자주"];
+const DELIVERY_TYPES = [
+  {key:"신규", color:"#3b82f6", bg:"#0d2040"},
+  {key:"교환", color:"#f59e0b", bg:"#2a1800"},
+  {key:"AS",   color:"#22c55e", bg:"#0a2010"},
+  {key:"반품", color:"#ef4444", bg:"#2a1010"},
+  {key:"수거", color:"#a78bfa", bg:"#1a1040"},
+  {key:"기타", color:"#64748b", bg:"#1a2235"},
+];
+const getDT = key => DELIVERY_TYPES.find(t=>t.key===key) || {key:"—",color:C.muted,bg:C.border};
 
 const C = {
   bg:"#0a0f1e", card:"#111827", card2:"#1a2235", border:"#1f2f47", border2:"#2a3d56",
@@ -118,26 +140,48 @@ function downloadCSV(content, filename) {
   URL.revokeObjectURL(url);
 }
 
-// ── Barcode ────────────────────────────────────────────────────────────────
-function Barcode({ value="SAMPLE", h=50, showText=true }) {
-  const bars=[]; let x=5;
-  for(let i=0;i<value.length;i++){
-    const code=value.charCodeAt(i);
-    for(let b=7;b>=0;b--){
-      const wide=(code>>b)&1;
-      if(wide||i%2===0) bars.push(<rect key={`${i}${b}`} x={x} y={2} width={wide?2.6:0.9} height={h-(showText?15:4)} fill="#111"/>);
-      x+=(wide?2.6:1.2)+0.4;
-    }
-    x+=2;
-  }
-  const tw=x+5;
-  return (
+// ── Code 128B 바코드 ─────────────────────────────────────────────────────
+// 표준 Code 128 패턴 테이블 (값 0~102)
+const C128T=[[2,1,2,2,2,2],[2,2,2,1,2,2],[2,2,2,2,2,1],[1,2,1,2,2,3],[1,2,1,3,2,2],[1,3,1,2,2,2],[1,2,2,2,1,3],[1,2,2,3,1,2],[1,3,2,2,1,2],[2,2,1,2,1,3],[2,2,1,3,1,2],[2,3,1,2,1,2],[1,1,2,2,3,2],[1,2,2,1,3,2],[1,2,2,2,3,1],[1,1,3,2,2,2],[1,2,3,1,2,2],[1,2,3,2,2,1],[2,2,3,2,1,1],[2,2,1,1,3,2],[2,2,1,2,3,1],[2,1,3,2,1,2],[2,2,3,1,1,2],[3,1,2,1,3,1],[3,1,1,2,2,2],[3,2,1,1,2,2],[3,2,1,2,2,1],[3,1,2,2,1,2],[3,2,2,1,1,2],[3,2,2,2,1,1],[2,1,2,1,2,3],[2,1,2,3,2,1],[2,3,2,1,2,1],[1,1,1,3,2,3],[1,3,1,1,2,3],[1,3,1,3,2,1],[1,1,2,3,1,3],[1,3,2,1,1,3],[1,3,2,3,1,1],[2,1,1,3,1,3],[2,3,1,1,1,3],[2,3,1,3,1,1],[1,1,2,1,3,3],[1,1,2,3,3,1],[1,3,2,1,3,1],[1,1,3,1,2,3],[1,1,3,3,2,1],[1,3,3,1,2,1],[3,1,3,1,2,1],[2,1,1,3,3,1],[2,3,1,1,3,1],[2,1,3,1,1,3],[2,1,3,3,1,1],[2,1,3,1,3,1],[3,1,1,1,2,3],[3,1,1,3,2,1],[3,3,1,1,2,1],[3,1,2,1,1,3],[3,1,2,3,1,1],[3,3,2,1,1,1],[3,1,4,1,1,1],[2,2,1,4,1,1],[4,3,1,1,1,1],[1,1,1,2,2,4],[1,1,1,4,2,2],[1,2,1,1,2,4],[1,2,1,4,2,1],[1,4,1,1,2,2],[1,4,1,2,2,1],[1,1,2,2,1,4],[1,1,2,4,1,2],[1,2,2,1,1,4],[1,2,2,4,1,1],[1,4,2,1,1,2],[1,4,2,2,1,1],[2,4,1,2,1,1],[2,2,1,1,1,4],[4,1,3,1,1,1],[2,4,1,1,1,2],[1,3,4,1,1,1],[1,1,1,2,4,2],[1,2,1,1,4,2],[1,2,1,2,4,1],[1,1,4,2,1,2],[1,2,4,1,1,2],[1,2,4,2,1,1],[4,1,1,2,1,2],[4,2,1,1,1,2],[4,2,1,2,1,1],[2,1,2,1,4,1],[2,1,4,1,2,1],[4,1,2,1,2,1],[1,1,1,1,4,3],[1,1,1,3,4,1],[1,3,1,1,4,1],[1,1,4,1,1,3],[1,1,4,3,1,1],[4,1,1,1,1,3],[4,1,1,3,1,1],[1,1,3,1,4,1],[1,1,4,1,3,1],[3,1,1,1,4,1],[4,1,1,1,3,1],[2,1,1,4,1,2],[2,1,1,2,1,4],[2,1,1,2,3,2]];
+const C128_SP=[2,1,1,2,1,4];   // Start B
+const C128_ST=[2,3,3,1,1,1,2]; // Stop
+
+// Code 128B 인코딩 (심볼 배열 + 체크 디짓 반환)
+function c128enc(str){
+  const syms=[];
+  for(let i=0;i<str.length;i++){const v=str.charCodeAt(i)-32;if(v>=0&&v<=95)syms.push(v);}
+  let chk=104;
+  for(let i=0;i<syms.length;i++)chk+=(i+1)*syms[i];
+  return{syms,chk:chk%103};
+}
+
+// React SVG 바코드 컴포넌트 (Code 128B)
+function Barcode({value="SAMPLE",h=50,showText=true}){
+  const{syms,chk}=c128enc(value);
+  const MW=2,bars=[];let x=4;
+  const draw=(p,k)=>{let bar=true;p.forEach((w,j)=>{const pw=w*MW;if(bar)bars.push(<rect key={`${k}_${j}`} x={x} y={2} width={pw} height={h-(showText?14:4)} fill="#111"/>);x+=pw;bar=!bar;});};
+  draw(C128_SP,'s');syms.forEach((s,i)=>draw(C128T[s],i));draw(C128T[chk],'c');draw(C128_ST,'e');
+  const tw=x+4;
+  return(
     <svg width={tw} height={h} style={{background:"#fff",display:"block",borderRadius:2}}>
       <rect width={tw} height={h} fill="#fff"/>
       {bars}
       {showText&&<text x={tw/2} y={h-3} textAnchor="middle" fontSize="7" fontFamily="monospace" fill="#333">{value}</text>}
     </svg>
   );
+}
+
+// 바코드 즉시 인쇄 (새 창)
+function printBarcode(value,label){
+  const{syms,chk}=c128enc(value);
+  const MW=2,BH=70;let x=10,rcts='';
+  const draw=p=>{let bar=true;p.forEach(w=>{const pw=w*MW;if(bar)rcts+=`<rect x="${x}" y="2" width="${pw}" height="${BH}" fill="#000"/>`;x+=pw;bar=!bar;});};
+  draw(C128_SP);syms.forEach(s=>draw(C128T[s]));draw(C128T[chk]);draw(C128_ST);
+  const W=x+10;
+  const svg=`<svg width="${W}" height="${BH+22}" xmlns="http://www.w3.org/2000/svg"><rect width="${W}" height="${BH+22}" fill="white"/>${rcts}<text x="${W/2}" y="${BH+16}" text-anchor="middle" font-size="10" font-family="monospace" fill="#333">${value}</text></svg>`;
+  const pw=window.open('','_blank','width=460,height=280');
+  pw.document.write(`<!DOCTYPE html><html><head><title>바코드 인쇄</title><style>body{margin:24px;text-align:center;font-family:sans-serif;background:#fff;}h3{font-size:15px;margin-bottom:14px;color:#111;}p{font-size:11px;color:#666;margin-top:6px;}</style></head><body><h3>${label||value}</h3>${svg}<p>Code 128B — ${value}</p></body></html>`);
+  pw.document.close();setTimeout(()=>pw.print(),500);
 }
 
 // ── StatusCell ─────────────────────────────────────────────────────────────
@@ -186,11 +230,13 @@ function ImagePreviewModal({ delivery, onClose }) {
   return (
     <div onClick={onClose} style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,0,0,0.93)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,cursor:"zoom-out"}}>
       <button onClick={onClose} style={{position:"absolute",top:18,right:18,width:38,height:38,borderRadius:"50%",background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.2)",color:"#fff",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}><IcX s={18}/></button>
-      <img src={delivery.productImage} alt="제품" onClick={e=>e.stopPropagation()} style={{maxWidth:"82vw",maxHeight:"68vh",objectFit:"contain",borderRadius:10,border:"2px solid rgba(255,255,255,0.12)",cursor:"default",boxShadow:"0 32px 80px rgba(0,0,0,0.8)"}}/>
-      <div onClick={e=>e.stopPropagation()} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,padding:"14px 24px",display:"flex",gap:28,alignItems:"center"}}>
+      <img src={delivery.productImage} alt="제품" onClick={e=>e.stopPropagation()} style={{maxWidth:"95vw",maxHeight:"88vh",width:"auto",height:"auto",objectFit:"contain",borderRadius:10,border:"2px solid rgba(255,255,255,0.12)",cursor:"default",boxShadow:"0 32px 80px rgba(0,0,0,0.8)"}}/>
+      <div onClick={e=>e.stopPropagation()} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,padding:"14px 24px",display:"flex",gap:28,alignItems:"center",flexWrap:"wrap",justifyContent:"center"}}>
         <div style={{textAlign:"center"}}><div style={{color:"rgba(255,255,255,0.45)",fontSize:10,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:3}}>고객</div><div style={{color:"#fff",fontWeight:800,fontSize:17}}>{delivery.customerName}</div></div>
         <div style={{width:1,height:36,background:"rgba(255,255,255,0.15)"}}/>
         <div style={{textAlign:"center"}}><div style={{color:"rgba(255,255,255,0.45)",fontSize:10,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:3}}>배송일</div><div style={{color:C.accent2,fontWeight:700,fontSize:15}}>{delivery.deliveryDate}</div></div>
+        {delivery.color&&<><div style={{width:1,height:36,background:"rgba(255,255,255,0.15)"}}/>
+        <div style={{textAlign:"center"}}><div style={{color:"rgba(255,255,255,0.45)",fontSize:10,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:3}}>색상</div><div style={{color:"#c4b5fd",fontWeight:700,fontSize:15}}>{delivery.color}</div></div></>}
         <div style={{width:1,height:36,background:"rgba(255,255,255,0.15)"}}/>
         <div style={{textAlign:"center",maxWidth:260}}><div style={{color:"rgba(255,255,255,0.45)",fontSize:10,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:3}}>품목</div><div style={{color:"rgba(255,255,255,0.85)",fontSize:13}}>{delivery.items||"—"}</div></div>
       </div>
@@ -205,44 +251,73 @@ function CalendarSidebar({ selectedDate, onSelect, deliveries }) {
   const y=view.getFullYear(),mo=view.getMonth();
   const firstDay=new Date(y,mo,1).getDay();
   const totalDays=new Date(y,mo+1,0).getDate();
-  const dateSet=new Set(deliveries.map(d=>d.deliveryDate));
   const DAY=["일","월","화","수","목","금","토"];
   const cells=[...Array(firstDay).fill(null),...Array.from({length:totalDays},(_,i)=>i+1)];
   const fmt=d=>`${y}-${String(mo+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
   const thisMonth=`${y}-${String(mo+1).padStart(2,"0")}`;
-  const monthTotal=deliveries.filter(d=>d.deliveryDate.startsWith(thisMonth)).length;
+
+  // 날짜별 건수 맵
+  const dateCounts={};
+  deliveries.forEach(d=>{ dateCounts[d.deliveryDate]=(dateCounts[d.deliveryDate]||0)+1; });
+
+  const isMonthSel=selectedDate===thisMonth;
+  const isDateSel=selectedDate&&selectedDate.length>7;
+  const filterStr=selectedDate||thisMonth;
+
+  // 하단 패널 정보
+  const panelDeliveries=deliveries.filter(d=>isDateSel?d.deliveryDate===selectedDate:d.deliveryDate.startsWith(thisMonth));
+  const panelCount=panelDeliveries.length;
+  const panelLabel=isDateSel?`${parseInt(selectedDate.split('-')[1])}월 ${parseInt(selectedDate.split('-')[2])}일`:`${mo+1}월 전체`;
+
   const SC=s=>s==="completed"?C.green:s==="inprogress"?C.blue:C.accent;
   const SL=s=>s==="completed"?"완료":s==="inprogress"?"배송중":"대기";
   return (
     <div style={{width:228,flexShrink:0,background:C.card,borderRight:`1px solid ${C.border}`,display:"flex",flexDirection:"column",padding:12}}>
+      {/* 월 이동 + 월 클릭 선택 */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
         <button onClick={()=>setView(new Date(y,mo-1,1))} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",padding:4,display:"flex"}}><IcLeft s={15}/></button>
-        <span style={{color:C.text,fontSize:13,fontWeight:700}}>{y}년 {mo+1}월</span>
+        <button onClick={()=>onSelect(isMonthSel?null:thisMonth)}
+          style={{background:isMonthSel?C.accent+"22":"none",border:isMonthSel?`1px solid ${C.accent}55`:"1px solid transparent",borderRadius:6,padding:"3px 8px",color:isMonthSel?C.accent:C.text,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+          {y}년 {mo+1}월
+        </button>
         <button onClick={()=>setView(new Date(y,mo+1,1))} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",padding:4,display:"flex"}}><IcRight s={15}/></button>
       </div>
+      {/* 날짜 그리드 */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,marginBottom:6}}>
         {DAY.map((l,i)=><div key={l} style={{textAlign:"center",fontSize:10,color:i===0?"#f87171":i===6?"#93c5fd":C.muted,padding:"2px 0"}}>{l}</div>)}
         {cells.map((d,i)=>{
           if(!d) return <div key={`e${i}`}/>;
-          const ds=fmt(d),hasDel=dateSet.has(ds),isSel=selectedDate===ds,dow=(firstDay+d-1)%7;
+          const ds=fmt(d),cnt=dateCounts[ds]||0,isSel=selectedDate===ds,dow=(firstDay+d-1)%7;
           return (
-            <button key={d} onClick={()=>onSelect(isSel?null:ds)} style={{background:isSel?C.accent:hasDel?C.border:"transparent",border:`2px solid ${isSel?C.accent:hasDel?C.accent+"55":"transparent"}`,borderRadius:5,color:isSel?"#000":dow===0?"#f87171":dow===6?"#93c5fd":C.text,cursor:"pointer",fontSize:11,padding:"3px 0",position:"relative",fontWeight:hasDel?700:400,lineHeight:"1.5"}}>
+            <button key={d} onClick={()=>onSelect(isSel?null:ds)}
+              style={{background:isSel?C.accent:cnt>0?C.border:"transparent",border:`2px solid ${isSel?C.accent:cnt>0?C.accent+"55":"transparent"}`,borderRadius:5,color:isSel?"#000":dow===0?"#f87171":dow===6?"#93c5fd":C.text,cursor:"pointer",fontSize:11,padding:"3px 0",position:"relative",fontWeight:cnt>0?700:400,lineHeight:"1.4",minHeight:26}}>
               {d}
-              {hasDel&&<span style={{position:"absolute",bottom:1,left:"50%",transform:"translateX(-50%)",width:4,height:4,borderRadius:"50%",background:isSel?"#000":C.accent,display:"block"}}/>}
+              {cnt>0&&<span style={{position:"absolute",bottom:1,left:"50%",transform:"translateX(-50%)",fontSize:7,fontWeight:800,color:isSel?"#000":C.accent,lineHeight:1}}>{cnt}</span>}
             </button>
           );
         })}
       </div>
       <button onClick={()=>onSelect(null)} style={{background:C.border2,color:C.muted2,border:"none",borderRadius:5,padding:"5px 0",cursor:"pointer",fontSize:11,marginBottom:12}}>전체 보기</button>
+      {/* 하단 정보 패널 — 선택에 따라 동적 변경 */}
       <div style={{background:C.bg,borderRadius:10,padding:14,flex:1}}>
-        <div style={{color:C.muted,fontSize:10,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:6}}>이번 달</div>
-        <div style={{color:C.accent,fontSize:26,fontWeight:800,lineHeight:1}}>{monthTotal}<span style={{color:C.muted,fontSize:12,fontWeight:400}}> 건</span></div>
-        <div style={{marginTop:12,display:"flex",flexDirection:"column",gap:5}}>
+        <div style={{color:C.muted,fontSize:10,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:4}}>{panelLabel}</div>
+        <div style={{color:C.accent,fontSize:28,fontWeight:800,lineHeight:1,marginBottom:10}}>
+          {panelCount}<span style={{color:C.muted,fontSize:12,fontWeight:400}}> 건</span>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:5}}>
           {["pending","inprogress","completed"].map(s=>{
-            const cnt=deliveries.filter(d=>d.deliveryDate.startsWith(thisMonth)&&d.status===s).length;
-            return cnt>0?<div key={s} style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:C.muted2}}><span style={{width:6,height:6,borderRadius:"50%",background:SC(s),display:"inline-block"}}/>{SL(s)}</span><span style={{color:SC(s),fontWeight:700,fontSize:12}}>{cnt}</span></div>:null;
+            const cnt=panelDeliveries.filter(d=>d.status===s).length;
+            return cnt>0?(
+              <div key={s} style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:C.muted2}}>
+                  <span style={{width:6,height:6,borderRadius:"50%",background:SC(s),display:"inline-block"}}/>{SL(s)}
+                </span>
+                <span style={{color:SC(s),fontWeight:700,fontSize:12}}>{cnt}</span>
+              </div>
+            ):null;
           })}
         </div>
+        {panelCount===0&&<div style={{color:C.muted,fontSize:11,marginTop:6}}>배송 없음</div>}
       </div>
     </div>
   );
@@ -250,14 +325,20 @@ function CalendarSidebar({ selectedDate, onSelect, deliveries }) {
 
 // ── DeliveryModal ──────────────────────────────────────────────────────────
 function DeliveryModal({ onClose, onSave, init }) {
-  const {items:allItems, sets:allSets} = useContext(AppCtx);
-  const blank={deliveryDate:today(),store:"",customerName:"",phone:"",address:"",color:"",notes:"",rowColor:"#1e293b",status:"pending",productImage:null};
+  const {items:allItems, sets:allSets, stores:allStores} = useContext(AppCtx);
+  const blank={deliveryDate:today(),store:"",deliveryType:"신규",customerName:"",phone:"",address:"",notes:"",rowColor:"#1e293b",status:"pending",productImage:null};
   const [f,setF]=useState(init||blank);
   const sv=(k,v)=>setF(p=>({...p,[k]:v}));
 
-  // 주문 품목 피커
-  const [pickedItems, setPickedItems]=useState(()=>init?.itemsList||[]);
-  const [pickSearch, setPickSearch]=useState("");
+  // 구입처 — 직접입력 모드
+  const [storeManual,setStoreManual]=useState(()=>init?.store&&!allStores.find(s=>s.name===init?.store));
+  const [storeInput,setStoreInput]=useState(init?.store||"");
+
+  // 품목 피커 / 텍스트 토글
+  const [itemsMode,setItemsMode]=useState('picker'); // 'picker' | 'text'
+  const [itemsText,setItemsText]=useState(()=>init?.items||"");
+  const [pickedItems,setPickedItems]=useState(()=>init?.itemsList||[]);
+  const [pickSearch,setPickSearch]=useState("");
   const pickable=[
     ...allSets.map(st=>({id:st.id,name:st.name,barcode:st.barcode,type:'set',stock:9999})),
     ...allItems.map(it=>({id:it.id,name:it.name,barcode:it.barcode,color:resolveColor(it),type:'item',stock:it.stock})),
@@ -270,37 +351,59 @@ function DeliveryModal({ onClose, onSave, init }) {
   const addToPick=item=>{
     const ex=pickedItems.findIndex(p=>p.id===item.id);
     if(ex>=0) setPickedItems(p=>p.map((pi,i)=>i===ex?{...pi,qty:pi.qty+1}:pi));
-    else setPickedItems(p=>[...p,{id:item.id,name:item.name,barcode:item.barcode,type:item.type,qty:1}]);
+    else {
+      const fullSet=item.type==='set'?allSets.find(s=>s.id===item.id):null;
+      setPickedItems(p=>[...p,{id:item.id,name:item.name,barcode:item.barcode,type:item.type,qty:1,components:fullSet?.components||[]}]);
+    }
   };
   const changePickQty=(idx,delta)=>setPickedItems(p=>p.map((pi,i)=>i===idx?{...pi,qty:Math.max(1,pi.qty+delta)}:pi));
 
+  // 선택된 품목에서 색상 자동 감지 (WH→화이트, OA→오크, BK→블랙)
+  const autoColors=[...new Set(pickedItems.flatMap(p=>{
+    if(p.type==='set') return (p.components||[]).map(c=>resolveColor({barcode:c.barcode||'',color:c.color||''})).filter(Boolean);
+    return [resolveColor({barcode:p.barcode||'',color:p.color||''})].filter(Boolean);
+  }))];
+
   const imgRef=useRef();
+  const [dragOver,setDragOver]=useState(false);
   const ROW_COLORS=["#1e293b","#0d2744","#0d2a1a","#2a1010","#1a1030","#2a2010"];
   const IS={width:"100%",background:C.bg,border:`1px solid ${C.border2}`,borderRadius:6,color:C.text,padding:"8px 10px",fontSize:13,boxSizing:"border-box",outline:"none"};
   const LS={color:C.muted2,fontSize:11,display:"block",marginBottom:4};
   const BS={width:24,height:24,borderRadius:4,background:C.border2,color:C.text,border:"none",cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700};
 
-  const handleImage=e=>{
-    const file=e.target.files[0]; if(!file) return;
+  const processImage=file=>{
     const reader=new FileReader();
     reader.onload=ev=>{
       const img=new Image();
       img.onload=()=>{
-        const MAX=320,scale=Math.min(MAX/img.width,MAX/img.height,1);
+        const MAX=1200,scale=Math.min(MAX/img.width,MAX/img.height,1);
         const canvas=document.createElement("canvas");
         canvas.width=Math.round(img.width*scale);canvas.height=Math.round(img.height*scale);
         canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);
-        sv("productImage",canvas.toDataURL("image/jpeg",0.75));
+        sv("productImage",canvas.toDataURL("image/jpeg",0.88));
       };
       img.src=ev.target.result;
     };
-    reader.readAsDataURL(file); e.target.value="";
+    reader.readAsDataURL(file);
   };
+  const handleImage=e=>{const file=e.target.files[0];if(!file)return;processImage(file);e.target.value="";};
 
   const handleSave=()=>{
     if(!f.customerName||!f.deliveryDate) return;
-    const itemsStr=pickedItems.map(p=>`${p.name} ×${p.qty}`).join(', ');
-    onSave({...f, items:itemsStr, itemsList:pickedItems});
+    const storeName=storeManual?storeInput:f.store;
+    const itemsStr=itemsMode==='text'?itemsText:pickedItems.map(p=>{
+      if(p.type==='set'&&p.components&&p.components.length>0){
+        const comps=p.components.map(c=>{
+          const col=resolveColor({barcode:c.barcode||'',color:c.color||''});
+          return `${c.name}${col?' ('+col+')':''} ${(c.qty||1)*(p.qty||1)}개`;
+        }).join(', ');
+        return `[${p.name}] ${comps}`;
+      }
+      return `${p.name} ${p.qty}개`;
+    }).join(' | ');
+    const colorToSave=f.color||(autoColors.length>0?autoColors.join(', '):'');
+    const itemsList=itemsMode==='picker'?pickedItems:[];
+    onSave({...f,store:storeName,items:itemsStr,itemsList,color:colorToSave});
   };
 
   return (
@@ -311,17 +414,52 @@ function DeliveryModal({ onClose, onSave, init }) {
           <button onClick={onClose} style={{background:"none",border:"none",color:C.muted,cursor:"pointer"}}><IcX s={18}/></button>
         </div>
         <div style={{padding:22,display:"grid",gap:13}}>
+
+          {/* 배송일 + 배송유형 */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <div><label style={LS}>배송일 *</label><input type="date" value={f.deliveryDate} onChange={e=>sv("deliveryDate",e.target.value)} style={IS}/></div>
-            <div><label style={LS}>구입처</label><input type="text" value={f.store} onChange={e=>sv("store",e.target.value)} placeholder="이케아 고양점" style={IS}/></div>
+            <div>
+              <label style={LS}>배송정보</label>
+              <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                {DELIVERY_TYPES.map(dt=>(
+                  <button key={dt.key} onClick={()=>sv("deliveryType",dt.key)}
+                    style={{padding:"5px 12px",borderRadius:20,fontSize:12,fontWeight:700,cursor:"pointer",border:`2px solid ${f.deliveryType===dt.key?dt.color:C.border2}`,background:f.deliveryType===dt.key?dt.bg:"transparent",color:f.deliveryType===dt.key?dt.color:C.muted,transition:"all 0.15s",fontFamily:"inherit"}}>
+                    {dt.key}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
+
+          {/* 구입처 */}
+          <div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+              <label style={{...LS,marginBottom:0}}>구입처</label>
+              <button onClick={()=>setStoreManual(p=>!p)} style={{background:"none",border:"none",color:C.blue,cursor:"pointer",fontSize:11}}>
+                {storeManual?"목록에서 선택":"직접 입력"}
+              </button>
+            </div>
+            {storeManual?(
+              <input type="text" value={storeInput} onChange={e=>setStoreInput(e.target.value)} placeholder="구입처 직접 입력" style={IS}/>
+            ):(
+              <select value={f.store} onChange={e=>sv("store",e.target.value)} style={IS}>
+                <option value="">-- 구입처 선택 --</option>
+                {allStores.map(s=><option key={s.id} value={s.name}>{s.name}</option>)}
+              </select>
+            )}
+          </div>
+
+          {/* 고객명 + 연락처 */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <div><label style={LS}>고객명 *</label><input type="text" value={f.customerName} onChange={e=>sv("customerName",e.target.value)} placeholder="홍길동" style={IS}/></div>
             <div><label style={LS}>연락처</label><input type="text" value={f.phone} onChange={e=>sv("phone",e.target.value)} placeholder="010-0000-0000" style={IS}/></div>
           </div>
+
+          {/* 주소 */}
           <div><label style={LS}>주소</label><input type="text" value={f.address} onChange={e=>sv("address",e.target.value)} placeholder="배송지 주소" style={IS}/></div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <div><label style={LS}>색상</label><input type="text" value={f.color} onChange={e=>sv("color",e.target.value)} placeholder="오크 브라운" style={IS}/></div>
+
+          {/* 상태 */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr",gap:12}}>
             <div><label style={LS}>상태</label>
               <select value={f.status} onChange={e=>sv("status",e.target.value)} style={IS}>
                 <option value="pending">대기중</option><option value="inprogress">배송중</option><option value="completed">완료</option>
@@ -329,57 +467,81 @@ function DeliveryModal({ onClose, onSave, init }) {
             </div>
           </div>
 
-          {/* ── 주문 품목 피커 ── */}
+          {/* ── 주문 품목 ── */}
           <div>
-            <label style={LS}>주문 품목 <span style={{color:C.muted,fontWeight:400}}>— 바코드 검색 또는 클릭으로 추가</span></label>
-
-            {/* 선택된 품목 목록 */}
-            {pickedItems.length>0&&(
-              <div style={{display:"flex",flexDirection:"column",gap:5,marginBottom:8}}>
-                {pickedItems.map((p,idx)=>(
-                  <div key={idx} style={{display:"flex",alignItems:"center",gap:8,background:C.bg,border:`1px solid ${C.border2}`,padding:"7px 10px",borderRadius:7}}>
-                    <span style={{fontSize:14}}>{p.type==='set'?'🧩':'📦'}</span>
-                    <span style={{flex:1,color:C.text,fontWeight:600,fontSize:13}}>{p.name}</span>
-                    {p.barcode&&<span style={{color:"#93c5fd",fontSize:10,fontFamily:"monospace"}}>{p.barcode}</span>}
-                    <button style={BS} onClick={()=>changePickQty(idx,-1)}>−</button>
-                    <span style={{color:C.accent,fontWeight:800,fontSize:14,minWidth:22,textAlign:"center"}}>×{p.qty}</span>
-                    <button style={BS} onClick={()=>changePickQty(idx,+1)}>+</button>
-                    <button onClick={()=>setPickedItems(p=>p.filter((_,i)=>i!==idx))} style={{background:"none",border:"none",color:C.red,cursor:"pointer",display:"flex",padding:2}}><IcX s={13}/></button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* 검색 + 피커 */}
-            <div style={{border:`1px solid ${C.border2}`,borderRadius:8,overflow:"hidden"}}>
-              <div style={{display:"flex",alignItems:"center",gap:6,padding:"7px 10px",background:C.bg,borderBottom:`1px solid ${C.border}`}}>
-                <span style={{display:"flex",color:C.muted,flexShrink:0}}><IcSearch s={12}/></span>
-                <input value={pickSearch} onChange={e=>setPickSearch(e.target.value)}
-                  placeholder="바코드 또는 품목명 입력…"
-                  style={{background:"none",border:"none",color:C.text,fontSize:12,outline:"none",flex:1}}/>
-              </div>
-              <div style={{maxHeight:160,overflowY:"auto"}}>
-                {filteredPickable.length===0&&<div style={{padding:14,textAlign:"center",color:C.muted,fontSize:12}}>품목 또는 세트를 먼저 등록하세요</div>}
-                {filteredPickable.map(item=>{
-                  const already=pickedItems.find(p=>p.id===item.id);
-                  return (
-                    <button key={item.id} onClick={()=>addToPick(item)}
-                      style={{display:"flex",alignItems:"center",width:"100%",textAlign:"left",padding:"8px 12px",background:already?C.border+"44":"transparent",border:"none",borderBottom:`1px solid ${C.border}22`,cursor:"pointer",gap:8,fontFamily:"inherit"}}
-                      onMouseEnter={e=>e.currentTarget.style.background=C.border2}
-                      onMouseLeave={e=>e.currentTarget.style.background=already?C.border+"44":"transparent"}>
-                      <span style={{fontSize:13}}>{item.type==='set'?'🧩':'📦'}</span>
-                      <span style={{flex:1,color:C.text,fontWeight:600,fontSize:13}}>{item.name}</span>
-                      <span style={{color:"#93c5fd",fontSize:10,fontFamily:"monospace"}}>{item.barcode}</span>
-                      {item.stock<9999&&<span style={{color:item.stock>0?C.green:C.red,fontSize:11,fontWeight:700,minWidth:40,textAlign:"right"}}>재고 {item.stock}</span>}
-                      {already?<span style={{color:C.accent,fontSize:11,fontWeight:700,minWidth:30,textAlign:"right"}}>×{already.qty}</span>:<span style={{display:"flex",color:C.green,flexShrink:0}}><IcPlus s={12}/></span>}
-                    </button>
-                  );
-                })}
-              </div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+              <label style={{...LS,marginBottom:0}}>주문 품목</label>
+              <button onClick={()=>setItemsMode(m=>m==='picker'?'text':'picker')}
+                style={{background:C.border2,border:"none",color:C.muted2,padding:"3px 10px",borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>
+                {itemsMode==='picker'?'📝 텍스트로 입력':'📦 품목 피커로 선택'}
+              </button>
             </div>
+
+            {itemsMode==='text'?(
+              <textarea value={itemsText} onChange={e=>setItemsText(e.target.value)}
+                placeholder="소파 3인용 ×1, 쿠션 ×4 (직접 입력)" rows={3}
+                style={{...IS,resize:"vertical"}}/>
+            ):(
+              <>
+                {pickedItems.length>0&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:5,marginBottom:8}}>
+                    {pickedItems.map((p,idx)=>(
+                      <div key={idx} style={{display:"flex",alignItems:"center",gap:8,background:C.bg,border:`1px solid ${C.border2}`,padding:"7px 10px",borderRadius:7}}>
+                        <span style={{fontSize:14}}>{p.type==='set'?'🧩':'📦'}</span>
+                        <span style={{flex:1,color:C.text,fontWeight:600,fontSize:13}}>{p.name}</span>
+                        {p.barcode&&<span style={{color:"#93c5fd",fontSize:10,fontFamily:"monospace"}}>{p.barcode}</span>}
+                        <button style={BS} onClick={()=>changePickQty(idx,-1)}>−</button>
+                        <span style={{color:C.accent,fontWeight:800,fontSize:14,minWidth:22,textAlign:"center"}}>×{p.qty}</span>
+                        <button style={BS} onClick={()=>changePickQty(idx,+1)}>+</button>
+                        <button onClick={()=>setPickedItems(p=>p.filter((_,i)=>i!==idx))} style={{background:"none",border:"none",color:C.red,cursor:"pointer",display:"flex",padding:2}}><IcX s={13}/></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{border:`1px solid ${C.border2}`,borderRadius:8,overflow:"hidden"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6,padding:"7px 10px",background:C.bg,borderBottom:`1px solid ${C.border}`}}>
+                    <span style={{display:"flex",color:C.muted,flexShrink:0}}><IcSearch s={12}/></span>
+                    <input value={pickSearch} onChange={e=>setPickSearch(e.target.value)} placeholder="바코드 또는 품목명 입력…" style={{background:"none",border:"none",color:C.text,fontSize:12,outline:"none",flex:1}}/>
+                  </div>
+                  <div style={{maxHeight:160,overflowY:"auto"}}>
+                    {filteredPickable.length===0&&<div style={{padding:14,textAlign:"center",color:C.muted,fontSize:12}}>품목 또는 세트를 먼저 등록하세요</div>}
+                    {filteredPickable.map(item=>{
+                      const already=pickedItems.find(p=>p.id===item.id);
+                      return (
+                        <button key={item.id} onClick={()=>addToPick(item)}
+                          style={{display:"flex",alignItems:"center",width:"100%",textAlign:"left",padding:"8px 12px",background:already?C.border+"44":"transparent",border:"none",borderBottom:`1px solid ${C.border}22`,cursor:"pointer",gap:8,fontFamily:"inherit"}}
+                          onMouseEnter={e=>e.currentTarget.style.background=C.border2}
+                          onMouseLeave={e=>e.currentTarget.style.background=already?C.border+"44":"transparent"}>
+                          <span style={{fontSize:13}}>{item.type==='set'?'🧩':'📦'}</span>
+                          <span style={{flex:1,color:C.text,fontWeight:600,fontSize:13}}>{item.name}</span>
+                          <span style={{color:"#93c5fd",fontSize:10,fontFamily:"monospace"}}>{item.barcode}</span>
+                          {item.stock<9999&&<span style={{color:item.stock>0?C.green:C.red,fontSize:11,fontWeight:700,minWidth:40,textAlign:"right"}}>재고 {item.stock}</span>}
+                          {already?<span style={{color:C.accent,fontSize:11,fontWeight:700,minWidth:30,textAlign:"right"}}>×{already.qty}</span>:<span style={{display:"flex",color:C.green,flexShrink:0}}><IcPlus s={12}/></span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           <div><label style={LS}>기타 메모</label><textarea value={f.notes} onChange={e=>sv("notes",e.target.value)} placeholder="특이사항" rows={2} style={{...IS,resize:"vertical"}}/></div>
+
+          {/* 색상 */}
+          <div>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+              <label style={{...LS,marginBottom:0}}>색상</label>
+              {autoColors.length>0&&<div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                {autoColors.map(c=><span key={c} style={{background:C.border2,color:C.accent2,padding:"2px 8px",borderRadius:12,fontSize:10,fontWeight:700}}>🎨 {c} 자동감지</span>)}
+              </div>}
+            </div>
+            <input type="text" value={f.color} onChange={e=>sv("color",e.target.value)}
+              placeholder={autoColors.length>0?autoColors.join(', '):"색상 직접 입력 (예: 화이트, 오크)"}
+              style={IS}/>
+          </div>
+
+          {/* 사진 업로드 + 드래그앤드롭 */}
           <div>
             <label style={LS}>제품 사진</label>
             <input ref={imgRef} type="file" accept="image/*" onChange={handleImage} style={{display:"none"}}/>
@@ -390,9 +552,15 @@ function DeliveryModal({ onClose, onSave, init }) {
                 <button onClick={()=>imgRef.current.click()} style={{position:"absolute",bottom:6,right:6,padding:"4px 8px",borderRadius:5,background:"rgba(0,0,0,0.65)",border:`1px solid ${C.border2}`,color:C.muted2,cursor:"pointer",fontSize:10}}>변경</button>
               </div>
             ):(
-              <button onClick={()=>imgRef.current.click()} style={{width:"100%",height:90,background:C.bg,border:`2px dashed ${C.border2}`,borderRadius:8,color:C.muted,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,fontSize:13}}>
-                <span style={{fontSize:24}}>📷</span><span>클릭하여 사진 첨부</span>
-              </button>
+              <div
+                onClick={()=>imgRef.current.click()}
+                onDrop={e=>{e.preventDefault();setDragOver(false);const file=e.dataTransfer.files[0];if(file&&file.type.startsWith('image/'))processImage(file);}}
+                onDragOver={e=>{e.preventDefault();setDragOver(true);}}
+                onDragLeave={()=>setDragOver(false)}
+                style={{width:"100%",height:110,background:dragOver?"rgba(59,130,246,0.08)":C.bg,border:`2px dashed ${dragOver?C.blue:C.border2}`,borderRadius:8,color:dragOver?C.blue:C.muted,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,fontSize:13,transition:"border-color 0.15s,background 0.15s"}}>
+                <span style={{fontSize:26}}>{dragOver?"📂":"📷"}</span>
+                <span style={{fontWeight:dragOver?700:400}}>{dragOver?"여기에 놓으세요":"클릭 또는 사진을 끌어다 놓으세요"}</span>
+              </div>
             )}
           </div>
           <div>
@@ -414,6 +582,7 @@ function DeliveryModal({ onClose, onSave, init }) {
   );
 }
 
+
 // ── PrintLabelModal ────────────────────────────────────────────────────────
 function PrintLabelModal({ d, onClose }) {
   const labelRef=useRef();
@@ -423,7 +592,7 @@ function PrintLabelModal({ d, onClose }) {
     w.document.write(`<!DOCTYPE html><html><head><title>배송 라벨</title><style>*{box-sizing:border-box}body{margin:0;padding:20px;font-family:'Malgun Gothic',sans-serif;background:#fff;color:#000}.hd{font-size:15px;font-weight:800;border-bottom:2px solid #000;padding-bottom:8px;margin-bottom:10px}.row{display:flex;margin:3px 0;font-size:12px}.k{width:65px;color:#666;flex-shrink:0}.bc{margin-top:12px;display:flex;flex-direction:column;align-items:center}svg{display:block}</style></head><body>${html}</body></html>`);
     w.document.close();setTimeout(()=>w.print(),600);
   };
-  const rows=[["배송일",d.deliveryDate],["구입처",d.store],["고객명",d.customerName],["연락처",d.phone],["주소",d.address],["품목",d.items],["색상",d.color],["메모",d.notes]].filter(([,v])=>v);
+  const rows=[["배송일",d.deliveryDate],["구입처",d.store],["고객명",d.customerName],["연락처",formatPhone(d.phone)],["주소",d.address],["품목",d.items],["색상",d.color]].filter(([,v])=>v&&v!=="—");
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{background:C.card2,borderRadius:14,width:520,border:`1px solid ${C.border2}`}}>
@@ -433,13 +602,13 @@ function PrintLabelModal({ d, onClose }) {
         </div>
         <div style={{padding:"18px 22px"}}>
           <div ref={labelRef} style={{background:"#fff",border:"2px solid #000",padding:16,borderRadius:4,color:"#000"}}>
-            <div style={{fontSize:15,fontWeight:800,borderBottom:"2px solid #000",paddingBottom:8,marginBottom:10}}>📦 가구 배송 라벨</div>
+            <div style={{fontSize:15,fontWeight:800,borderBottom:"2px solid #000",paddingBottom:8,marginBottom:10}}>📦 레브릭스 배송 라벨</div>
             <div style={{display:"flex",gap:12}}>
               <div style={{flex:1}}>{rows.map(([k,v])=><div key={k} style={{display:"flex",marginBottom:3,fontSize:12}}><span style={{width:65,color:"#666",flexShrink:0}}>{k}</span><span style={{fontWeight:k==="고객명"||k==="품목"?700:600}}>{v}</span></div>)}</div>
               {d.productImage&&<img src={d.productImage} alt="제품" style={{width:90,height:90,objectFit:"cover",borderRadius:4,border:"1px solid #ccc",flexShrink:0}}/>}
             </div>
             <div style={{marginTop:12,display:"flex",flexDirection:"column",alignItems:"center"}}>
-              <Barcode value={d.id} h={58}/><div style={{fontSize:9,color:"#888",marginTop:4}}>주문 ID: {d.id}</div>
+              {(()=>{const bc=(d.id||'').replace(/[^A-Z0-9]/gi,'').slice(0,8).toUpperCase();return(<><Barcode value={bc||'NOCODE'} h={58}/><div style={{fontSize:9,color:"#888",marginTop:4}}>주문: {bc}</div></>);})()}
             </div>
           </div>
         </div>
@@ -453,6 +622,492 @@ function PrintLabelModal({ d, onClose }) {
 }
 
 // ── DeliveryPage ───────────────────────────────────────────────────────────
+// ── TimePickerCell ─────────────────────────────────────────────────────────
+function TimePickerCell({ currentTime, onSave }) {
+  const [open,setOpen]=useState(false);
+  const ref=useRef();
+  useEffect(()=>{
+    if(!open) return;
+    const close=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};
+    document.addEventListener("mousedown",close);
+    return()=>document.removeEventListener("mousedown",close);
+  },[open]);
+  // 08:00 ~ 24:00, 30분 단위
+  const slots=[];
+  for(let h=8;h<=24;h++){
+    slots.push(`${String(h).padStart(2,"0")}:00`);
+    if(h<24) slots.push(`${String(h).padStart(2,"0")}:30`);
+  }
+  return (
+    <div ref={ref} style={{position:"relative",alignSelf:"center",flexShrink:0}}>
+      <button onClick={()=>setOpen(p=>!p)}
+        style={{display:"flex",alignItems:"center",gap:6,background:C.bg,border:`1px solid ${currentTime?C.border2:C.border}`,borderRadius:8,padding:"5px 10px",cursor:"pointer",color:currentTime?C.text:C.muted,fontFamily:"inherit"}}>
+        <span style={{fontSize:"1em"}}>🕐</span>
+        <span style={{fontFamily:"monospace",fontSize:"0.92em",fontWeight:currentTime?700:400,letterSpacing:"0.05em"}}>
+          {currentTime||"--:--"}
+        </span>
+      </button>
+      {open&&(
+        <div style={{position:"absolute",top:"calc(100% + 4px)",left:0,background:C.card2,border:`1px solid ${C.border2}`,borderRadius:10,padding:4,zIndex:200,maxHeight:220,overflowY:"auto",minWidth:90,boxShadow:"0 8px 24px rgba(0,0,0,0.5)"}}>
+          <button onClick={()=>{onSave("");setOpen(false);}}
+            style={{width:"100%",textAlign:"center",padding:"6px 12px",background:!currentTime?C.border+"88":"transparent",color:C.muted,border:"none",borderRadius:6,cursor:"pointer",fontSize:"0.85em",fontFamily:"monospace",display:"block"}}>
+            --:--
+          </button>
+          {slots.map(slot=>(
+            <button key={slot} onClick={()=>{onSave(slot);setOpen(false);}}
+              style={{width:"100%",textAlign:"center",padding:"7px 14px",background:currentTime===slot?C.accent+"33":"transparent",color:currentTime===slot?C.accent:C.text,border:"none",borderRadius:6,cursor:"pointer",fontSize:"0.92em",fontFamily:"monospace",fontWeight:currentTime===slot?800:400,display:"block"}}
+              onMouseEnter={e=>e.currentTarget.style.background=currentTime===slot?C.accent+"44":C.border2}
+              onMouseLeave={e=>e.currentTarget.style.background=currentTime===slot?C.accent+"33":"transparent"}>
+              {slot}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── SmsModal ───────────────────────────────────────────────────────────────
+// ── Solapi 설정 ────────────────────────────────────────────────────────────
+const SOLAPI_KEY    = "NCSVICJTJGLWWRJI";
+const SOLAPI_SECRET = "7DXCLDT2IJOZ9FQOE67JVCGAKBOWO08D";
+const SOLAPI_FROM   = "01024497567";
+
+// HMAC-SHA256 서명 생성 (Web Crypto API)
+async function solapiAuth() {
+  const date = new Date().toISOString();
+  const salt = Math.random().toString(36).substr(2,20);
+  const enc  = new TextEncoder();
+  const key  = await crypto.subtle.importKey('raw', enc.encode(SOLAPI_SECRET), {name:'HMAC',hash:'SHA-256'}, false, ['sign']);
+  const sig  = await crypto.subtle.sign('HMAC', key, enc.encode(date+salt));
+  const hex  = Array.from(new Uint8Array(sig)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  return `HMAC-SHA256 apiKey=${SOLAPI_KEY}, date=${date}, salt=${salt}, signature=${hex}`;
+}
+
+// SMS 발송
+async function sendSms(to, text) {
+  const auth = await solapiAuth();
+  const res = await fetch('https://api.solapi.com/messages/v4/send', {
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':auth},
+    body: JSON.stringify({ message:{ to: to.replace(/\D/g,''), from: SOLAPI_FROM, text } })
+  });
+  const data = await res.json();
+  if(!res.ok) throw new Error(data.message||'전송 실패');
+  return data;
+}
+
+// 카카오 알림톡 발송 (pfId, templateId는 솔라피 콘솔에서 설정 필요)
+async function sendAlimtalk(to, templateId, variables, pfId) {
+  const auth = await solapiAuth();
+  const res = await fetch('https://api.solapi.com/messages/v4/send', {
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':auth},
+    body: JSON.stringify({
+      message:{
+        to: to.replace(/\D/g,''),
+        from: SOLAPI_FROM,
+        kakaoOptions:{
+          pfId,
+          templateId,
+          variables,   // { "#{고객명}": "홍길동", "#{배송일}": "4월 17일" }
+          disableSms: false  // 알림톡 실패시 SMS 자동 대체
+        }
+      }
+    })
+  });
+  const data = await res.json();
+  if(!res.ok) throw new Error(data.message||'알림톡 전송 실패');
+  return data;
+}
+
+// ── 카카오 알림톡 설정 (솔라피 콘솔에서 템플릿 등록 후 입력) ──────────────
+// 솔라피 콘솔 > 카카오 채널 > pfId 확인
+// 솔라피 콘솔 > 알림톡 템플릿 > 승인 후 templateId 확인
+let KAKAO_PFID         = "";  // 솔라피 채널 ID (KA01PF...)
+let KAKAO_TPL_DELIVERY = "";  // 배송등록 템플릿 ID
+let KAKAO_TPL_TIME     = "";  // 배송시간 템플릿 ID
+
+// ── MessageModal ────────────────────────────────────────────────────────────
+function SmsModal({ delivery, onClose }) {
+  const {templates}=useContext(AppCtx);
+  const fmtDate=d=>{if(!d)return'';const p=d.split('-');return`${parseInt(p[1])}월 ${parseInt(p[2])}일`;};
+  const hasTime=!!delivery.deliveryTime;
+  const hasKakao=!!(KAKAO_PFID&&KAKAO_TPL_DELIVERY);
+
+  // RTDB 템플릿 불러오기 + 변수 치환
+  const applyVars=content=>(content||'')
+    .replace(/#{고객명}/g, delivery.customerName||'고객')
+    .replace(/#{배송일}/g,  fmtDate(delivery.deliveryDate))
+    .replace(/#{배송시간}/g,delivery.deliveryTime||'—');
+
+  const tplD=templates.find(t=>t.id==='delivery');
+  const tplT=templates.find(t=>t.id==='time');
+  const msg1=applyVars(tplD?.content||'안녕하세요, 레브릭스입니다.\n\n#{고객명} 고객님,\n구매하신 제품 배송이 등록되었습니다.\n\n배송 예정일: #{배송일}\n\n배송 당일 기사님이 연락드릴 예정입니다.\n감사합니다.');
+  const msg2=applyVars(tplT?.content||'안녕하세요, 레브릭스입니다.\n\n#{고객명} 고객님,\n오늘 배송 시간이 확정되었습니다.\n\n배송일: #{배송일}\n배송 시간: #{배송시간}\n\n방문 전 기사님이 다시 연락드리겠습니다.\n감사합니다.');
+
+  const [selected,setSelected]=useState(0);  // 0=배송등록, 1=시간안내
+  const [editing,setEditing]=useState(false);
+  const [editedMsg,setEditedMsg]=useState('');
+  const [sending,setSending]=useState(false);
+  const [result,setResult]=useState(null);   // {ok, msg}
+
+  const baseMsg=selected===0?msg1:msg2;
+  const msg=editing?editedMsg:baseMsg;
+
+  // 탭 전환시 편집내용 초기화
+  const switchTab=tab=>{setSelected(tab);setEditing(false);setEditedMsg('');setResult(null);};
+  const startEdit=()=>{setEditedMsg(baseMsg);setEditing(true);};
+  const cancelEdit=()=>{setEditing(false);setEditedMsg('');};
+
+  const phone=(delivery.phone||'').replace(/\D/g,'');
+
+  useEffect(()=>{
+    const h=e=>{if(e.key==='Escape')onClose();};
+    window.addEventListener('keydown',h);
+    return()=>window.removeEventListener('keydown',h);
+  },[onClose]);
+
+  const handleSend=async(type)=>{
+    if(!phone){setResult({ok:false,msg:'전화번호가 없습니다.'});return;}
+    setSending(true);setResult(null);
+    try{
+      if(type==='kakao'&&KAKAO_PFID){
+        const tplId=selected===0?KAKAO_TPL_DELIVERY:KAKAO_TPL_TIME;
+        const vars=selected===0
+          ?{'#{고객명}':delivery.customerName,'#{배송예정일}':fmtDate(delivery.deliveryDate)}
+          :{'#{고객명}':delivery.customerName,'#{배송일}':fmtDate(delivery.deliveryDate),'#{배송시간}':delivery.deliveryTime||'—'};
+        await sendAlimtalk(phone,tplId,vars,KAKAO_PFID);
+        setResult({ok:true,msg:'알림톡 전송 완료 ✅'});
+      } else {
+        await sendSms(phone,msg);
+        setResult({ok:true,msg:'SMS 전송 완료 ✅'});
+      }
+    }catch(e){
+      setResult({ok:false,msg:`전송 실패: ${e.message}`});
+    }
+    setSending(false);
+  };
+
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.82)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:C.card2,borderRadius:14,width:"100%",maxWidth:480,border:`1px solid ${C.border2}`,overflow:"hidden"}}>
+
+        {/* 헤더 */}
+        <div style={{padding:"16px 20px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:22}}>📱</span>
+            <div>
+              <div style={{color:C.text,fontWeight:800,fontSize:15}}>{delivery.customerName}</div>
+              <div style={{color:"#93c5fd",fontFamily:"monospace",fontSize:12}}>{formatPhone(delivery.phone)}</div>
+            </div>
+          </div>
+          <button onClick={onClose} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",display:"flex"}}><IcX s={18}/></button>
+        </div>
+
+        {/* 메시지 타입 */}
+        <div style={{padding:"14px 20px",borderBottom:`1px solid ${C.border}`,display:"flex",gap:8}}>
+          <button onClick={()=>switchTab(0)}
+            style={{flex:1,padding:"8px 0",borderRadius:8,border:`2px solid ${selected===0?C.accent:C.border2}`,background:selected===0?C.accent+"22":"transparent",color:selected===0?C.accent:C.muted2,cursor:"pointer",fontWeight:700,fontSize:13,fontFamily:"inherit"}}>
+            📅 배송 등록 안내
+          </button>
+          <button onClick={()=>hasTime&&switchTab(1)}
+            style={{flex:1,padding:"8px 0",borderRadius:8,border:`2px solid ${selected===1?C.blue:C.border2}`,background:selected===1?C.blue+"22":"transparent",color:selected===1?C.blue:hasTime?C.muted2:C.border2,cursor:hasTime?"pointer":"not-allowed",fontWeight:700,fontSize:13,fontFamily:"inherit",opacity:hasTime?1:0.45}}>
+            🕐 배송 시간 안내
+            {!hasTime&&<div style={{fontSize:9,fontWeight:400,marginTop:2}}>시간 등록 후 사용</div>}
+          </button>
+        </div>
+
+        {/* 미리보기 / 편집 */}
+        <div style={{padding:"14px 20px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <span style={{color:C.muted,fontSize:11}}>{editing?"✏️ 메시지 편집 중":"📄 메시지 미리보기"}</span>
+            <div style={{display:"flex",gap:6}}>
+              {editing?(
+                <>
+                  <button onClick={cancelEdit}
+                    style={{padding:"4px 12px",borderRadius:6,border:`1px solid ${C.border2}`,background:"transparent",color:C.muted2,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>
+                    취소
+                  </button>
+                  <button onClick={()=>{setEditedMsg(baseMsg);}}
+                    style={{padding:"4px 12px",borderRadius:6,border:`1px solid ${C.border2}`,background:"transparent",color:C.muted2,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>
+                    ↺ 원본으로
+                  </button>
+                </>
+              ):(
+                <button onClick={startEdit}
+                  style={{padding:"4px 14px",borderRadius:6,border:`1px solid ${C.accent}66`,background:C.accent+"15",color:C.accent,cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit",display:"flex",alignItems:"center",gap:5}}>
+                  ✏️ 편집
+                </button>
+              )}
+            </div>
+          </div>
+
+          {editing?(
+            <textarea
+              value={editedMsg}
+              onChange={e=>setEditedMsg(e.target.value)}
+              style={{width:"100%",minHeight:180,background:C.bg,border:`1.5px solid ${C.accent}55`,borderRadius:10,color:C.text,fontSize:13,lineHeight:1.8,padding:"12px 14px",outline:"none",resize:"vertical",fontFamily:"inherit",boxSizing:"border-box"}}
+            />
+          ):(
+            <div style={{background:C.bg,border:`1px solid ${C.border2}`,borderRadius:10,padding:"12px 14px",maxHeight:180,overflowY:"auto"}}>
+              <div style={{whiteSpace:"pre-wrap",fontSize:13,color:C.text,lineHeight:1.8}}>{msg}</div>
+            </div>
+          )}
+          {result&&(
+            <div style={{marginTop:10,padding:"9px 14px",borderRadius:8,background:result.ok?"#0d2a1a":"#2a1010",border:`1px solid ${result.ok?C.green:C.red}44`,color:result.ok?C.green:C.red,fontSize:13,fontWeight:700,textAlign:"center"}}>
+              {result.msg}
+            </div>
+          )}
+        </div>
+
+        {/* 전송 버튼 */}
+        <div style={{padding:"4px 20px 18px",display:"flex",gap:8,flexDirection:"column"}}>
+          {/* SMS 자동 발송 (솔라피) */}
+          <button onClick={()=>handleSend('sms')} disabled={sending||!phone}
+            style={{width:"100%",padding:"13px 0",borderRadius:8,border:"none",background:sending?"#1a2235":C.blue,color:"#fff",cursor:sending||!phone?"not-allowed":"pointer",fontWeight:800,fontSize:15,fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:8,opacity:phone?1:0.5}}>
+            {sending?<><span style={{display:"inline-block",animation:"spin 0.8s linear infinite"}}>⏳</span> 전송 중...</>:<>📨 SMS 자동 발송</>}
+          </button>
+
+          {/* 카카오 알림톡 */}
+          <button onClick={()=>handleSend('kakao')} disabled={sending||!phone||!KAKAO_PFID}
+            style={{width:"100%",padding:"13px 0",borderRadius:8,border:"none",background:KAKAO_PFID?"#fee500":"#2a2a1a",color:KAKAO_PFID?"#111":"#666",cursor:KAKAO_PFID&&!sending?"pointer":"not-allowed",fontWeight:800,fontSize:15,fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:8,opacity:KAKAO_PFID?1:0.45}}>
+            {KAKAO_PFID?<>💬 카카오 알림톡 발송</>:<>💬 카카오 알림톡 (채널 설정 필요)</>}
+          </button>
+
+          {!KAKAO_PFID&&(
+            <div style={{fontSize:10,color:C.muted,textAlign:"center",lineHeight:1.6}}>
+              알림톡: 솔라피 콘솔 → 카카오 채널 연결 → KAKAO_PFID / KAKAO_TPL_* 값을 HTML에 입력하세요
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MessagesPage ───────────────────────────────────────────────────────────
+function MessagesPage() {
+  const {templates,addTemplate,updateTemplate,removeTemplate}=useContext(AppCtx);
+  const [editing,setEditing]=useState(null);
+  const [form,setForm]=useState({title:'',type:'sms',content:''});
+
+  // 카카오 설정
+  const [kakaoForm,setKakaoForm]=useState({pfId:KAKAO_PFID,tplDelivery:KAKAO_TPL_DELIVERY,tplTime:KAKAO_TPL_TIME});
+  const [kakaoSaved,setKakaoSaved]=useState(false);
+  const [showKakao,setShowKakao]=useState(false);
+
+  const saveKakao=async()=>{
+    KAKAO_PFID=kakaoForm.pfId.trim();
+    KAKAO_TPL_DELIVERY=kakaoForm.tplDelivery.trim();
+    KAKAO_TPL_TIME=kakaoForm.tplTime.trim();
+    await rtDb.ref('kakaoConfig').set({pfId:KAKAO_PFID,tplDelivery:KAKAO_TPL_DELIVERY,tplTime:KAKAO_TPL_TIME});
+    setKakaoSaved(true);setTimeout(()=>setKakaoSaved(false),2500);
+  };
+
+  const IS={width:"100%",background:C.bg,border:`1px solid ${C.border2}`,borderRadius:7,color:C.text,padding:"8px 12px",fontSize:14,outline:"none",boxSizing:"border-box",fontFamily:"monospace"};
+  const ISN={width:"100%",background:C.bg,border:`1px solid ${C.border2}`,borderRadius:7,color:C.text,padding:"8px 12px",fontSize:14,outline:"none",boxSizing:"border-box",fontFamily:"inherit"};
+
+  const openNew=()=>{setForm({title:'',type:'sms',content:''});setEditing('new');};
+  const openEdit=t=>{setForm({title:t.title,type:t.type||'sms',content:t.content});setEditing(t);};
+  const save=async()=>{
+    if(!form.title||!form.content) return;
+    if(editing==='new') await addTemplate(form);
+    else await updateTemplate(editing.id,form);
+    setEditing(null);
+  };
+
+  const VARS=['#{고객명}','#{배송일}','#{배송시간}'];
+  const insertVar=v=>setForm(p=>({...p,content:p.content+v}));
+
+  return (
+    <div style={{display:"flex",height:"100%",overflow:"hidden"}}>
+      {/* 템플릿 목록 */}
+      <div style={{width:260,flexShrink:0,borderRight:`1px solid ${C.border}`,background:C.card,display:"flex",flexDirection:"column"}}>
+        <div style={{padding:"14px 16px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{color:C.text,fontWeight:700,fontSize:14}}>💬 메시지 템플릿</span>
+          <button onClick={openNew} style={{display:"flex",alignItems:"center",gap:4,padding:"5px 12px",background:C.accent,color:"#000",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit"}}>
+            <IcPlus s={12}/> 추가
+          </button>
+        </div>
+        <div style={{flex:1,overflowY:"auto",padding:10,display:"flex",flexDirection:"column",gap:6}}>
+          {templates.length===0&&<div style={{textAlign:"center",padding:32,color:C.muted,fontSize:13}}>템플릿이 없습니다</div>}
+          {templates.map(t=>(
+            <div key={t.id} onClick={()=>openEdit(t)}
+              style={{background:editing?.id===t.id?C.border2:C.bg,border:`1px solid ${editing?.id===t.id?C.accent+"66":C.border2}`,borderRadius:9,padding:"10px 12px",cursor:"pointer",transition:"background 0.15s"}}
+              onMouseEnter={e=>e.currentTarget.style.background=C.border2}
+              onMouseLeave={e=>e.currentTarget.style.background=editing?.id===t.id?C.border2:C.bg}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+                <div>
+                  <div style={{color:C.text,fontWeight:700,fontSize:13}}>{t.title}</div>
+                  <div style={{color:C.muted,fontSize:10,marginTop:2}}>{t.type==='kakao'?'💬 알림톡':'📱 SMS'}</div>
+                </div>
+                <button onClick={e=>{e.stopPropagation();removeTemplate(t.id);}}
+                  style={{padding:"3px 7px",background:"#2a1010",color:C.red,border:"none",borderRadius:4,cursor:"pointer",display:"flex",flexShrink:0}}>
+                  <IcTrash s={11}/>
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        {/* 카카오 연동 버튼 */}
+        <div style={{padding:"10px 12px",borderTop:`1px solid ${C.border}`}}>
+          <button onClick={()=>{setKakaoForm({pfId:KAKAO_PFID,tplDelivery:KAKAO_TPL_DELIVERY,tplTime:KAKAO_TPL_TIME});setEditing('kakao');}}
+            style={{width:"100%",padding:"9px 0",borderRadius:8,border:`2px solid ${KAKAO_PFID?"#fee50088":C.border2}`,background:KAKAO_PFID?"#2a2a0a":"transparent",color:KAKAO_PFID?"#fee500":C.muted2,cursor:"pointer",fontWeight:700,fontSize:13,fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+            💬 카카오 알림톡 설정
+            {KAKAO_PFID&&<span style={{fontSize:9,background:"#fee500",color:"#111",padding:"1px 5px",borderRadius:8,fontWeight:800}}>연동됨</span>}
+          </button>
+        </div>
+      </div>
+
+      {/* 편집 영역 */}
+      <div style={{flex:1,overflow:"auto",padding:24}}>
+        {!editing?(
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",gap:16,color:C.muted}}>
+            <span style={{fontSize:48}}>💬</span>
+            <div style={{fontSize:16,fontWeight:600}}>왼쪽에서 템플릿을 선택하거나 새로 추가하세요</div>
+            <button onClick={openNew} style={{padding:"10px 24px",background:C.accent,color:"#000",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:14,fontFamily:"inherit"}}>+ 새 템플릿 추가</button>
+          </div>
+        ):editing==='kakao'?(
+          /* ── 카카오 설정 패널 ── */
+          <div style={{maxWidth:560}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:24}}>
+              <span style={{fontSize:26}}>💬</span>
+              <div>
+                <div style={{color:C.text,fontWeight:800,fontSize:17}}>카카오 알림톡 연동 설정</div>
+                <div style={{color:C.muted,fontSize:12,marginTop:2}}>솔라피 콘솔에서 발급받은 값을 입력하세요</div>
+              </div>
+            </div>
+
+            {/* 연동 상태 표시 */}
+            <div style={{background:KAKAO_PFID?"#1a2a0a":"#1a1a1a",border:`1px solid ${KAKAO_PFID?"#fee50044":C.border2}`,borderRadius:10,padding:"12px 16px",marginBottom:20,display:"flex",alignItems:"center",gap:10}}>
+              <span style={{fontSize:18}}>{KAKAO_PFID?"✅":"⚪"}</span>
+              <div>
+                <div style={{color:KAKAO_PFID?"#fee500":C.muted,fontWeight:700,fontSize:13}}>{KAKAO_PFID?"카카오 채널 연동됨":"미연동 상태"}</div>
+                {KAKAO_PFID&&<div style={{color:C.muted,fontSize:11,fontFamily:"monospace",marginTop:2}}>{KAKAO_PFID}</div>}
+              </div>
+            </div>
+
+            <div style={{display:"grid",gap:16}}>
+              <div>
+                <label style={{color:C.muted2,fontSize:12,display:"block",marginBottom:6}}>
+                  채널 ID (pfId) <span style={{color:C.muted}}>— 솔라피 콘솔 → 카카오 채널 → PFID</span>
+                </label>
+                <input type="text" value={kakaoForm.pfId} onChange={e=>setKakaoForm(p=>({...p,pfId:e.target.value}))}
+                  placeholder="KA01PF..." style={IS}/>
+              </div>
+              <div>
+                <label style={{color:C.muted2,fontSize:12,display:"block",marginBottom:6}}>
+                  배송 등록 안내 템플릿 ID <span style={{color:C.muted}}>— 승인 완료 상태여야 함</span>
+                </label>
+                <input type="text" value={kakaoForm.tplDelivery} onChange={e=>setKakaoForm(p=>({...p,tplDelivery:e.target.value}))}
+                  placeholder="KA01TP..." style={IS}/>
+              </div>
+              <div>
+                <label style={{color:C.muted2,fontSize:12,display:"block",marginBottom:6}}>
+                  배송 시간 안내 템플릿 ID <span style={{color:C.muted}}>— 승인 완료 상태여야 함</span>
+                </label>
+                <input type="text" value={kakaoForm.tplTime} onChange={e=>setKakaoForm(p=>({...p,tplTime:e.target.value}))}
+                  placeholder="KA01TP..." style={IS}/>
+              </div>
+
+              <div style={{background:C.bg,border:`1px solid ${C.border2}`,borderRadius:8,padding:"12px 14px",fontSize:12,color:C.muted,lineHeight:1.8}}>
+                <div style={{color:C.muted2,fontWeight:700,marginBottom:6}}>📋 설정 방법</div>
+                1. <a href="https://console.solapi.com" target="_blank" rel="noreferrer" style={{color:C.blue}}>솔라피 콘솔</a> → 카카오 채널 → 채널 연동 → <b style={{color:C.text}}>PFID</b> 복사<br/>
+                2. 알림톡 템플릿 등록 → 검수 승인 후 → <b style={{color:C.text}}>템플릿 ID</b> 복사<br/>
+                3. 위 필드에 붙여넣기 후 저장
+              </div>
+
+              <div style={{display:"flex",gap:10}}>
+                <button onClick={()=>setEditing(null)}
+                  style={{padding:"11px 22px",background:C.border2,color:C.muted2,border:"none",borderRadius:8,cursor:"pointer",fontSize:14,fontFamily:"inherit"}}>취소</button>
+                <button onClick={saveKakao}
+                  style={{flex:1,padding:"11px 0",background:kakaoSaved?"#0d2a1a":"#fee500",color:kakaoSaved?C.green:"#111",border:"none",borderRadius:8,cursor:"pointer",fontWeight:800,fontSize:15,fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+                  {kakaoSaved?<>✅ 저장됨!</>:<>💾 저장</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        ):(
+          <div style={{maxWidth:640}}>
+            <div style={{color:C.text,fontWeight:800,fontSize:17,marginBottom:20}}>{editing==='new'?'✨ 새 템플릿':'✏️ 템플릿 수정'}</div>
+
+            <div style={{display:"grid",gap:16}}>
+              {/* 제목 */}
+              <div>
+                <label style={{color:C.muted2,fontSize:12,display:"block",marginBottom:6}}>템플릿 이름 *</label>
+                <input type="text" value={form.title} onChange={e=>setForm(p=>({...p,title:e.target.value}))}
+                  placeholder="예: 배송 등록 안내" style={IS}/>
+              </div>
+
+              {/* 타입 */}
+              <div>
+                <label style={{color:C.muted2,fontSize:12,display:"block",marginBottom:6}}>메시지 타입</label>
+                <div style={{display:"flex",gap:8}}>
+                  {[['sms','📱 SMS'],['kakao','💬 카카오 알림톡']].map(([val,label])=>(
+                    <button key={val} onClick={()=>setForm(p=>({...p,type:val}))}
+                      style={{padding:"7px 18px",borderRadius:7,border:`2px solid ${form.type===val?C.accent:C.border2}`,background:form.type===val?C.accent+"22":"transparent",color:form.type===val?C.accent:C.muted2,cursor:"pointer",fontWeight:700,fontSize:13,fontFamily:"inherit"}}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 변수 버튼 */}
+              <div>
+                <label style={{color:C.muted2,fontSize:12,display:"block",marginBottom:6}}>
+                  변수 삽입 <span style={{color:C.muted,fontWeight:400}}>— 클릭하면 커서 위치에 삽입</span>
+                </label>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  {VARS.map(v=>(
+                    <button key={v} onClick={()=>insertVar(v)}
+                      style={{padding:"4px 12px",borderRadius:20,border:`1px solid ${C.accent}55`,background:C.accent+"15",color:C.accent,cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"monospace"}}>
+                      {v}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 내용 */}
+              <div>
+                <label style={{color:C.muted2,fontSize:12,display:"block",marginBottom:6}}>메시지 내용 *</label>
+                <textarea value={form.content} onChange={e=>setForm(p=>({...p,content:e.target.value}))}
+                  rows={10} placeholder="메시지 내용을 입력하세요&#10;#{고객명}, #{배송일}, #{배송시간} 변수를 사용할 수 있습니다"
+                  style={{...IS,resize:"vertical",lineHeight:1.8}}/>
+                <div style={{color:C.muted,fontSize:11,marginTop:4}}>글자 수: {form.content.length}자</div>
+              </div>
+
+              {/* 미리보기 */}
+              <div>
+                <label style={{color:C.muted2,fontSize:12,display:"block",marginBottom:6}}>미리보기 (예시 데이터)</label>
+                <div style={{background:C.bg,border:`1px solid ${C.border2}`,borderRadius:9,padding:"12px 14px"}}>
+                  <div style={{whiteSpace:"pre-wrap",fontSize:13,color:C.text,lineHeight:1.8}}>
+                    {form.content
+                      .replace(/#{고객명}/g,'홍길동')
+                      .replace(/#{배송일}/g,'4월 17일')
+                      .replace(/#{배송시간}/g,'14:00')
+                    ||<span style={{color:C.muted}}>내용을 입력하면 미리보기가 표시됩니다</span>}
+                  </div>
+                </div>
+              </div>
+
+              {/* 저장 버튼 */}
+              <div style={{display:"flex",gap:10}}>
+                <button onClick={()=>setEditing(null)}
+                  style={{padding:"11px 22px",background:C.border2,color:C.muted2,border:"none",borderRadius:8,cursor:"pointer",fontSize:14,fontFamily:"inherit"}}>취소</button>
+                <button onClick={save}
+                  style={{flex:1,padding:"11px 0",background:C.accent,color:"#000",border:"none",borderRadius:8,cursor:"pointer",fontWeight:800,fontSize:15,fontFamily:"inherit"}}>
+                  {editing==='new'?'✅ 템플릿 저장':'✅ 수정 완료'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DeliveryPage() {
   const {deliveries,addDelivery,updateDelivery,bulkDeleteDeliveries,reorderDeliveries,delLoading,fontSize}=useContext(AppCtx);
   const [selDate,setSelDate]=useState(null);
@@ -462,15 +1117,23 @@ function DeliveryPage() {
   const [checked,setChecked]=useState(new Set());
   const [search,setSearch]=useState("");
   const [previewImg,setPreviewImg]=useState(null);
+  const [kakaoTarget,setKakaoTarget]=useState(null);
+  const [sidebarOpen,setSidebarOpen]=useState(true);
   const dragFrom=useRef(null),dragTo=useRef(null);
-  const base=selDate?deliveries.filter(d=>d.deliveryDate===selDate):deliveries;
-  const list=search?base.filter(d=>d.customerName.includes(search)||d.address.includes(search)||d.store.includes(search)||d.items.includes(search)):base;
+
+  // 날짜 포맷: 2026-04-17 → 4월 17일
+  const fmtDate=d=>{
+    if(!d) return '—';
+    const p=d.split('-');
+    return `${parseInt(p[1])}월 ${parseInt(p[2])}일`;
+  };
+
+  const base=selDate?deliveries.filter(d=>d.deliveryDate.startsWith(selDate)):deliveries;
+  const list=search?base.filter(d=>(d.customerName||'').includes(search)||(d.address||'').includes(search)||(d.store||'').includes(search)||(d.items||'').includes(search)):base;
+
   const save=async form=>{
-    setShowAdd(false);setEditDel(null); // 먼저 닫기
-    try{
-      if(editDel) await updateDelivery(editDel.id,form);
-      else await addDelivery(form);
-    }catch(e){}
+    setShowAdd(false);setEditDel(null);
+    try{ if(editDel) await updateDelivery(editDel.id,form); else await addDelivery(form); }catch(e){}
   };
   const bulkDelete=async()=>{await bulkDeleteDeliveries(checked);setChecked(new Set());};
   const toggle=id=>setChecked(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);return n;});
@@ -486,71 +1149,190 @@ function DeliveryPage() {
     await reorderDeliveries(arr);
     dragFrom.current=null;dragTo.current=null;
   };
-  const SC=s=>s==="completed"?C.green:s==="inprogress"?C.blue:C.accent;
-  const TH={padding:"12px 13px",textAlign:"left",color:C.muted,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",borderBottom:`2px solid ${C.border}`,whiteSpace:"nowrap",background:C.bg,position:"sticky",top:0};
-  const TD={padding:"14px 12px",color:C.text,verticalAlign:"middle",borderBottom:`1px solid ${C.border}44`};
+
+  const TH={padding:"10px 12px",textAlign:"left",color:C.muted,fontSize:"0.77em",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",borderBottom:`2px solid ${C.border}`,whiteSpace:"nowrap",background:C.bg,position:"sticky",top:0};
+  const TD={padding:"12px 12px",color:C.text,verticalAlign:"middle"};
+
+  // 품목 렌더링
+  const renderItems=d=>{
+    const il=d.itemsList;
+    if(!il||il.length===0) return <span style={{whiteSpace:"pre-wrap",wordBreak:"break-word",color:C.muted2}}>{d.items||"—"}</span>;
+    return (
+      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+        {il.map((p,idx)=>(
+          <div key={idx} style={{display:"flex",flexDirection:"column",gap:2}}>
+            {p.type==='set'?(
+              <>
+                <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+                  <span style={{flexShrink:0}}>🧩</span>
+                  <span style={{fontWeight:800,color:C.accent2}}>{p.name}</span>
+                  <span style={{color:C.muted,fontSize:"0.85em"}}>{p.qty}세트</span>
+                </div>
+                {(p.components||[]).map((c,ci)=>{
+                  const col=resolveColor({barcode:c.barcode||'',color:c.color||''});
+                  return (
+                    <div key={ci} style={{display:"flex",alignItems:"center",gap:3,paddingLeft:20,flexWrap:"wrap"}}>
+                      <span style={{flexShrink:0,fontSize:"0.85em"}}>📦</span>
+                      <span style={{color:C.text}}>{c.name}</span>
+                      <span style={{color:C.accent,fontWeight:700,fontSize:"0.92em"}}>{(c.qty||1)*(p.qty||1)}개</span>
+                      {col&&<span style={{color:C.muted2,fontSize:"0.85em"}}>({col})</span>}
+                    </div>
+                  );
+                })}
+              </>
+            ):(
+              <div style={{display:"flex",alignItems:"center",gap:3,flexWrap:"wrap"}}>
+                <span style={{flexShrink:0,fontSize:"0.85em"}}>📦</span>
+                <span style={{color:C.text}}>{p.name}</span>
+                <span style={{color:C.accent,fontWeight:700,fontSize:"0.92em"}}>{p.qty}개</span>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   return (
-    <div style={{display:"flex",height:"100%",overflow:"hidden"}}>
-      <CalendarSidebar selectedDate={selDate} onSelect={setSelDate} deliveries={deliveries}/>
+    <div style={{display:"flex",height:"100%",overflow:"hidden",fontSize}}>
+      {/* 사이드바 */}
+      {sidebarOpen && <CalendarSidebar selectedDate={selDate} onSelect={setSelDate} deliveries={deliveries}/>}
+
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        {/* 툴바 */}
         <div style={{padding:"9px 14px",borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:C.card,flexShrink:0,gap:10}}>
-          <div style={{display:"flex",alignItems:"center",gap:10,flex:1}}>
-            <span style={{color:C.muted2,fontSize:12,whiteSpace:"nowrap"}}>{selDate?`📅 ${selDate}`:"📋 전체"} <span style={{color:C.accent,fontWeight:700}}>{list.length}건</span></span>
+          <div style={{display:"flex",alignItems:"center",gap:8,flex:1}}>
+            {/* 사이드바 토글 */}
+            <button onClick={()=>setSidebarOpen(p=>!p)} title={sidebarOpen?"달력 숨기기":"달력 보기"}
+              style={{width:30,height:30,background:sidebarOpen?C.accent+"22":C.border2,border:`1px solid ${sidebarOpen?C.accent+"55":C.border2}`,borderRadius:6,color:sidebarOpen?C.accent:C.muted,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontSize:"1em"}}>
+              {sidebarOpen?"◀":"▶"}
+            </button>
+            <span style={{color:C.muted2,whiteSpace:"nowrap"}}>{selDate?`📅 ${fmtDate(selDate)}`:"📋 전체"} <span style={{color:C.accent,fontWeight:700}}>{list.length}건</span></span>
             <div style={{position:"relative",maxWidth:220,flex:1}}>
               <span style={{position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",color:C.muted,pointerEvents:"none",display:"flex"}}><IcSearch s={13}/></span>
-              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="검색..." style={{width:"100%",background:C.bg,border:`1px solid ${C.border2}`,borderRadius:6,color:C.text,padding:"6px 8px 6px 26px",fontSize:12,outline:"none",boxSizing:"border-box"}}/>
+              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="검색..." style={{width:"100%",background:C.bg,border:`1px solid ${C.border2}`,borderRadius:6,color:C.text,padding:"6px 8px 6px 26px",fontSize:"0.92em",outline:"none",boxSizing:"border-box"}}/>
             </div>
-            {checked.size>0&&<button onClick={bulkDelete} style={{display:"flex",alignItems:"center",gap:4,padding:"5px 11px",background:"#3a1010",color:C.red,border:`1px solid ${C.red}44`,borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}><IcTrash s={13}/> {checked.size}개 삭제</button>}
+            {checked.size>0&&<button onClick={bulkDelete} style={{display:"flex",alignItems:"center",gap:4,padding:"5px 11px",background:"#3a1010",color:C.red,border:`1px solid ${C.red}44`,borderRadius:6,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}><IcTrash s={13}/> {checked.size}개 삭제</button>}
           </div>
-          <button onClick={()=>{setEditDel(null);setShowAdd(true);}} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 16px",background:C.accent,color:"#000",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:13,whiteSpace:"nowrap"}}><IcPlus s={15}/> 일정 추가</button>
+          <button onClick={()=>{setEditDel(null);setShowAdd(true);}} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 16px",background:C.accent,color:"#000",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap"}}><IcPlus s={15}/> 일정 추가</button>
         </div>
+
+        {/* 테이블 */}
         <div style={{flex:1,overflow:"auto"}}>
           {delLoading?(
-            <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:200,color:C.muted,fontSize:14}}>
-              <span style={{display:"inline-block",animation:"spin 1s linear infinite",marginRight:8}}><IcRefr s={18}/></span> Firebase에서 불러오는 중...
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:200,color:C.muted}}>
+              <span style={{display:"inline-block",animation:"spin 1s linear infinite",marginRight:8}}><IcRefr s={18}/></span> 불러오는 중...
             </div>
           ):(
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize}}>
-              <thead><tr>
-                <th style={{...TH,width:34}}><input type="checkbox" checked={checked.size===list.length&&list.length>0} onChange={toggleAll} style={{accentColor:C.accent,cursor:"pointer"}}/></th>
-                <th style={{...TH,width:46,textAlign:"center"}}>No.</th>
-                <th style={TH}>배송일</th><th style={TH}>구입처</th><th style={TH}>고객명</th><th style={TH}>연락처</th>
-                <th style={{...TH,width:90,textAlign:"center"}}>사진</th>
-                <th style={{...TH,minWidth:150}}>주소</th><th style={TH}>색상</th>
-                <th style={{...TH,minWidth:160}}>주문 품목</th><th style={{...TH,minWidth:80}}>기타</th>
-                <th style={TH}>상태</th><th style={{...TH,textAlign:"center",minWidth:86}}>관리</th>
-              </tr></thead>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead>
+                <tr>
+                  <th style={{...TH,width:34}}><input type="checkbox" checked={checked.size===list.length&&list.length>0} onChange={toggleAll} style={{accentColor:C.accent,cursor:"pointer"}}/></th>
+                  <th style={{...TH,width:"5em"}}>배송유형</th>
+                  <th style={{...TH,width:"4.5em"}}>배송일</th>
+                  <th style={{...TH,width:"5.5em"}}>시간</th>
+                  <th style={TH}>구입처</th>
+                  <th style={TH}>고객명</th>
+                  <th style={TH}>연락처</th>
+                  <th style={{...TH,minWidth:"8em"}}>주소</th>
+                  <th style={TH}>상태</th>
+                  <th style={{...TH,textAlign:"center",width:"5.5em"}}>관리</th>
+                  <th style={{...TH,width:32}}></th>
+                </tr>
+              </thead>
               <tbody>
-                {list.map((d,i)=>(
-                  <tr key={d.id} draggable onDragStart={e=>onDragStart(e,d.id)} onDragOver={e=>onDragOver(e,d.id)} onDrop={onDrop}
-                    style={{background:checked.has(d.id)?"#1d4ed833":d.rowColor||C.card,cursor:"grab"}}>
-                    <td style={TD}><input type="checkbox" checked={checked.has(d.id)} onChange={()=>toggle(d.id)} style={{accentColor:C.accent,cursor:"pointer",width:15,height:15}}/></td>
-                    <td style={{...TD,textAlign:"center"}}><div style={{width:30,height:30,borderRadius:5,background:C.border2,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto",color:C.text,fontWeight:800,fontSize:13}}>{i+1}</div></td>
-                    <td style={{...TD,color:C.accent2,fontWeight:700,whiteSpace:"nowrap",fontSize:"1.02em"}}>{d.deliveryDate}</td>
-                    <td style={{...TD,fontSize:"0.95em",whiteSpace:"nowrap"}}>{d.store||"—"}</td>
-                    <td style={{...TD,fontWeight:800,whiteSpace:"nowrap",fontSize:"1.05em"}}>{d.customerName}</td>
-                    <td style={{...TD,color:"#93c5fd",fontFamily:"monospace",fontSize:"0.95em",whiteSpace:"nowrap"}}>{d.phone||"—"}</td>
-                    <td style={{...TD,textAlign:"center",padding:"10px 8px"}}>
-                      {d.productImage?(
-                        <img src={d.productImage} alt="제품사진" style={{width:96,height:96,objectFit:"cover",borderRadius:8,border:`2px solid ${C.border2}`,display:"block",margin:"0 auto",cursor:"zoom-in"}} onClick={()=>setPreviewImg(d)} title="클릭하면 크게 보기"/>
-                      ):(
-                        <div style={{width:96,height:96,borderRadius:8,border:`2px dashed ${C.border2}`,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto",color:C.muted,fontSize:26}}>📷</div>
-                      )}
-                    </td>
-                    <td style={{...TD,fontSize:"0.9em",color:"#b0c4d8",maxWidth:190}}>{d.address||"—"}</td>
-                    <td style={TD}><span style={{background:C.border,padding:"3px 8px",borderRadius:5,fontSize:"0.9em",whiteSpace:"nowrap"}}>{d.color||"—"}</span></td>
-                    <td style={{...TD,fontSize:"0.95em",lineHeight:1.6}}>{d.items||"—"}</td>
-                    <td style={{...TD,color:C.muted2,fontSize:"0.9em",maxWidth:120}}>{d.notes||"—"}</td>
-                    <td style={TD}><StatusCell delivery={d} updateDelivery={updateDelivery}/></td>
-                    <td style={{...TD,textAlign:"center"}}>
-                      <div style={{display:"flex",gap:6,justifyContent:"center"}}>
-                        <button onClick={()=>{setEditDel(d);setShowAdd(true);}} title="수정" style={{padding:"6px 10px",background:C.border2,color:C.muted2,border:"none",borderRadius:5,cursor:"pointer",display:"flex"}}><IcEdit s={13}/></button>
-                        <button onClick={()=>setPrintDel(d)} title="라벨 인쇄" style={{padding:"6px 10px",background:"#0d2744",color:"#60a5fa",border:"none",borderRadius:5,cursor:"pointer",display:"flex"}}><IcPrint s={13}/></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {list.length===0&&!delLoading&&<tr><td colSpan={13} style={{textAlign:"center",padding:56,color:C.muted,fontSize:14}}>{search?"검색 결과가 없습니다.":"배송 일정이 없습니다. '일정 추가' 버튼을 눌러 등록하세요."}</td></tr>}
+                {list.map((d)=>{
+                  const dt=getDT(d.deliveryType);
+                  const bg=checked.has(d.id)?"#1d4ed833":dt.bg;
+                  const bl=`4px solid ${dt.color}`;
+                  return (
+                    <React.Fragment key={d.id}>
+                      {/* 메인 행 */}
+                      <tr draggable onDragStart={e=>onDragStart(e,d.id)} onDragOver={e=>onDragOver(e,d.id)} onDrop={onDrop}
+                        style={{background:bg,cursor:"grab",borderLeft:bl}}>
+                        <td style={{...TD,paddingBottom:2,paddingTop:22}}>
+                          <input type="checkbox" checked={checked.has(d.id)} onChange={()=>toggle(d.id)} style={{accentColor:C.accent,cursor:"pointer",width:15,height:15}}/>
+                        </td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22}}>
+                          <span style={{background:dt.bg,color:dt.color,padding:"4px 10px",borderRadius:20,fontSize:"0.85em",fontWeight:700,border:`1px solid ${dt.color}55`,whiteSpace:"nowrap"}}>
+                            {d.deliveryType||"—"}
+                          </span>
+                        </td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22,color:C.accent2,fontWeight:700,whiteSpace:"nowrap"}}>{fmtDate(d.deliveryDate)}</td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22}}>
+                          <TimePickerCell
+                            currentTime={d.deliveryTime||""}
+                            onSave={time=>updateDelivery(d.id,{deliveryTime:time})}
+                          />
+                        </td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22,whiteSpace:"nowrap"}}>{d.store||"—"}</td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22,fontWeight:800,whiteSpace:"nowrap",fontSize:"1.08em"}}>{d.customerName}</td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22}}>
+                          <button onClick={()=>d.phone&&setKakaoTarget(d)}
+                            style={{background:"none",border:"none",color:"#93c5fd",fontFamily:"monospace",whiteSpace:"nowrap",cursor:d.phone?"pointer":"default",padding:0,fontSize:"inherit",fontWeight:d.phone?700:400,textDecoration:d.phone?"underline":"none",textDecorationStyle:"dotted",textUnderlineOffset:3}}>
+                            {formatPhone(d.phone)}
+                          </button>
+                        </td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22,color:"#b0c4d8"}}>{d.address||"—"}</td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22}}><StatusCell delivery={d} updateDelivery={updateDelivery}/></td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22,textAlign:"center"}}>
+                          <div style={{display:"flex",gap:5,justifyContent:"center"}}>
+                            <button onClick={()=>{setEditDel(d);setShowAdd(true);}} title="수정" style={{padding:"5px 9px",background:C.border2,color:C.muted2,border:"none",borderRadius:5,cursor:"pointer",display:"flex"}}><IcEdit s={12}/></button>
+                            <button onClick={()=>setPrintDel(d)} title="라벨 인쇄" style={{padding:"5px 9px",background:"#0d2744",color:"#60a5fa",border:"none",borderRadius:5,cursor:"pointer",display:"flex"}}><IcPrint s={12}/></button>
+                          </div>
+                        </td>
+                        {/* 드래그 핸들 */}
+                        <td style={{...TD,paddingBottom:0,paddingTop:22,textAlign:"center",cursor:"grab",userSelect:"none"}} title="드래그하여 순서 변경">
+                          <div style={{display:"flex",flexDirection:"column",gap:3,alignItems:"center",opacity:0.45,padding:"2px 6px"}}>
+                            <span style={{width:18,height:2,background:C.muted2,borderRadius:2,display:"block"}}/>
+                            <span style={{width:18,height:2,background:C.muted2,borderRadius:2,display:"block"}}/>
+                            <span style={{width:18,height:2,background:C.muted2,borderRadius:2,display:"block"}}/>
+                          </div>
+                        </td>
+                      </tr>
+                      {/* 서브 행: 사진 + 품목(하단정렬) + 색상(중앙) + 기타 */}
+                      <tr style={{background:bg,borderLeft:bl,borderBottom:`1.5px solid rgba(255,255,255,0.1)`}}>
+                        <td colSpan={11} style={{padding:"6px 16px 28px 48px"}}>
+                          <div style={{display:"flex",gap:16,alignItems:"flex-end"}}>
+                            {/* 사진 */}
+                            {d.productImage?(
+                              <img src={d.productImage} alt="제품" style={{width:160,height:160,objectFit:"cover",borderRadius:10,border:`2px solid ${C.border2}`,cursor:"zoom-in",flexShrink:0}} onClick={()=>setPreviewImg(d)} title="클릭하면 크게 보기"/>
+                            ):(
+                              <div style={{width:160,height:160,borderRadius:10,border:`1.5px dashed ${C.border2}66`,display:"flex",alignItems:"center",justifyContent:"center",color:C.muted+"55",fontSize:"2em",flexShrink:0}}>📷</div>
+                            )}
+                            {/* 품목 — 하단 정렬 */}
+                            <div style={{minWidth:0,alignSelf:"flex-end"}}>{renderItems(d)}</div>
+                            {/* 색상 — 중앙 정렬, 색상별 배경 */}
+                            <div style={{alignSelf:"center",flexShrink:0}}>
+                              {(()=>{
+                                const col=(d.color||"").trim();
+                                if(!col) return (
+                                  <input type="text" placeholder="색상 입력" defaultValue=""
+                                    onBlur={e=>{if(e.target.value.trim())updateDelivery(d.id,{color:e.target.value.trim()});}}
+                                    onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){updateDelivery(d.id,{color:e.target.value.trim()});e.target.blur();}}}
+                                    style={{width:"5em",background:"transparent",border:`1px solid ${C.border2}`,borderRadius:4,color:C.muted2,padding:"3px 6px",fontSize:"0.85em",outline:"none",fontFamily:"inherit"}}/>
+                                );
+                                const lo=col.toLowerCase();
+                                const isW=lo.includes("화이트")||lo.includes("white");
+                                const isB=lo.includes("블랙")||lo.includes("black");
+                                const isO=lo.includes("오크")||lo.includes("oak");
+                                const bg=isW?"#ffffff":isB?"#111111":isO?"#7a5214":C.border;
+                                const fg=isW?"#111111":"#ffffff";
+                                const brd=isW?"1px solid #bbb":isB?"1px solid #333":"none";
+                                return <span style={{background:bg,color:fg,padding:"5px 14px",borderRadius:6,fontSize:"0.85em",whiteSpace:"nowrap",display:"inline-block",border:brd,fontWeight:700,letterSpacing:"0.03em"}}>{col}</span>;
+                              })()}
+                            </div>
+                            {/* 기타 — 색상 바로 옆, 중앙 정렬 */}
+                            {d.notes&&(
+                              <span style={{color:C.muted2,fontSize:"0.85em",flexShrink:1,alignSelf:"center",maxWidth:220,wordBreak:"break-word",lineHeight:1.5}}>📝 {d.notes}</span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    </React.Fragment>
+                  );
+                })}
+                {list.length===0&&!delLoading&&<tr><td colSpan={11} style={{textAlign:"center",padding:56,color:C.muted}}>{search?"검색 결과가 없습니다.":"배송 일정이 없습니다. '일정 추가' 버튼을 눌러 등록하세요."}</td></tr>}
               </tbody>
             </table>
           )}
@@ -559,13 +1341,14 @@ function DeliveryPage() {
       {showAdd&&<DeliveryModal onClose={()=>{setShowAdd(false);setEditDel(null);}} onSave={save} init={editDel}/>}
       {printDel&&<PrintLabelModal d={printDel} onClose={()=>setPrintDel(null)}/>}
       {previewImg&&<ImagePreviewModal delivery={previewImg} onClose={()=>setPreviewImg(null)}/>}
+      {kakaoTarget&&<SmsModal delivery={kakaoTarget} onClose={()=>setKakaoTarget(null)}/>}
     </div>
   );
 }
 
 // ── ItemsPage ──────────────────────────────────────────────────────────────
 function ItemsPage() {
-  const {items,addItem,updateItem,removeItem,sets,addSet,updateSet,removeSet,fontSize,fromWarehouse}=useContext(AppCtx);
+  const {items,addItem,updateItem,removeItem,sets,addSet,updateSet,removeSet,stores,addStore,removeStore,fontSize,fromWarehouse}=useContext(AppCtx);
   const [tab,setTab]=useState("items");
   const [search,setSearch]=useState("");
   const [showItemModal,setShowItemModal]=useState(false);
@@ -575,6 +1358,7 @@ function ItemsPage() {
   const [iForm,setIForm]=useState({name:"",color:"",barcode:"",stock:0});
   const [sForm,setSForm]=useState({name:"",barcode:"",notes:"",components:[]});
   const [compSearch,setCompSearch]=useState("");
+  const [newStoreName,setNewStoreName]=useState("");
   const csvRef=useRef(),setCsvRef=useRef();
   const filteredItems=items.filter(i=>!search||i.name.includes(search)||i.color.includes(search)||i.barcode.includes(search));
   const openEditItem=it=>{setEditItem(it);setIForm({name:it.name,color:it.color,barcode:it.barcode,stock:it.stock});setShowItemModal(true);};
@@ -631,7 +1415,7 @@ function ItemsPage() {
   return (
     <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
       <div style={{display:"flex",borderBottom:`1px solid ${C.border}`,background:C.card,flexShrink:0}}>
-        {[["items","📦 품목 관리",items.length],["sets","🧩 세트 관리",sets.length]].map(([key,label,count])=>(
+        {[["items","📦 품목 관리",items.length],["sets","🧩 세트 관리",sets.length],["stores","🏪 구입처 관리",stores.length]].map(([key,label,count])=>(
           <button key={key} onClick={()=>setTab(key)} style={{padding:"12px 22px",background:"none",border:"none",borderBottom:tab===key?`3px solid ${C.accent}`:"3px solid transparent",color:tab===key?C.accent:C.muted,cursor:"pointer",fontSize:14,fontWeight:tab===key?700:400,display:"flex",alignItems:"center",gap:7,fontFamily:"inherit"}}>
             {label}<span style={{background:C.border2,color:C.muted2,padding:"1px 8px",borderRadius:10,fontSize:11}}>{count}</span>
           </button>
@@ -669,7 +1453,15 @@ function ItemsPage() {
                     </td>
                     <td style={{...TD,fontFamily:"monospace",color:"#93c5fd",fontSize:12}}>{item.barcode}</td>
                     <td style={TD}><span style={{color:item.stock>5?C.green:item.stock>0?C.accent:C.red,fontWeight:700}}>{item.stock}</span></td>
-                    <td style={TD}><Barcode value={item.barcode} h={36}/></td>
+                    <td style={TD}>
+                      <div onClick={()=>printBarcode(item.barcode,item.name)}
+                        title="클릭하여 바코드 인쇄"
+                        style={{cursor:"pointer",display:"inline-block",borderRadius:4,border:`1px solid transparent`,transition:"border-color 0.15s"}}
+                        onMouseEnter={e=>e.currentTarget.style.borderColor=C.accent+"88"}
+                        onMouseLeave={e=>e.currentTarget.style.borderColor="transparent"}>
+                        <Barcode value={item.barcode} h={36}/>
+                      </div>
+                    </td>
                     <td style={TD}>
                       <div style={{display:"flex",gap:5}}>
                         {!fromWarehouse&&<><button onClick={()=>openEditItem(item)} style={{padding:"4px 8px",background:C.border2,color:C.muted2,border:"none",borderRadius:4,cursor:"pointer",display:"flex"}}><IcEdit s={12}/></button><button onClick={()=>removeItem(item.id)} style={{padding:"4px 8px",background:"#2a1010",color:C.red,border:"none",borderRadius:4,cursor:"pointer",display:"flex"}}><IcTrash s={12}/></button></>}
@@ -706,7 +1498,13 @@ function ItemsPage() {
                       </div>
                     </div>
                     <div style={{display:"flex",gap:6,alignItems:"flex-start",flexShrink:0}}>
-                      <Barcode value={set.barcode} h={38}/>
+                      <div onClick={()=>printBarcode(set.barcode,set.name)}
+                        title="클릭하여 바코드 인쇄"
+                        style={{cursor:"pointer",display:"inline-block",borderRadius:4,border:`1px solid transparent`,transition:"border-color 0.15s"}}
+                        onMouseEnter={e=>e.currentTarget.style.borderColor=C.accent+"88"}
+                        onMouseLeave={e=>e.currentTarget.style.borderColor="transparent"}>
+                        <Barcode value={set.barcode} h={38}/>
+                      </div>
                       <button onClick={()=>openEditSet(set)} style={{padding:"5px 8px",background:C.border2,color:C.muted2,border:"none",borderRadius:5,cursor:"pointer",display:"flex"}}><IcEdit s={13}/></button>
                       <button onClick={()=>removeSet(set.id)} style={{padding:"5px 8px",background:"#2a1010",color:C.red,border:"none",borderRadius:5,cursor:"pointer",display:"flex"}}><IcTrash s={13}/></button>
                     </div>
@@ -716,6 +1514,32 @@ function ItemsPage() {
               {sets.length===0&&<div style={{textAlign:"center",padding:40,color:C.muted}}>등록된 세트가 없습니다.</div>}
             </div>
           </>
+        )}
+
+        {/* ── 구입처 관리 탭 ── */}
+        {tab==="stores"&&(
+          <div style={{maxWidth:560}}>
+            <div style={{display:"flex",gap:8,marginBottom:16,alignItems:"center"}}>
+              <input value={newStoreName} onChange={e=>setNewStoreName(e.target.value)}
+                onKeyDown={e=>{if(e.key==="Enter"&&newStoreName.trim()){addStore(newStoreName.trim());setNewStoreName("");}}}
+                placeholder="구입처 이름 입력 후 Enter 또는 추가 버튼"
+                style={{flex:1,background:C.bg,border:`1px solid ${C.border2}`,borderRadius:7,color:C.text,padding:"9px 12px",fontSize:13,outline:"none"}}/>
+              <button onClick={()=>{if(newStoreName.trim()){addStore(newStoreName.trim());setNewStoreName("");}}}
+                style={{display:"flex",alignItems:"center",gap:5,padding:"9px 16px",background:C.accent,color:"#000",border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:700,whiteSpace:"nowrap",fontFamily:"inherit"}}>
+                <IcPlus s={14}/> 추가
+              </button>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {stores.length===0&&<div style={{textAlign:"center",padding:40,color:C.muted}}>등록된 구입처가 없습니다.</div>}
+              {stores.map(st=>(
+                <div key={st.id} style={{display:"flex",alignItems:"center",gap:10,background:C.card,border:`1px solid ${C.border2}`,borderRadius:9,padding:"10px 14px"}}>
+                  <span style={{fontSize:18}}>🏪</span>
+                  <span style={{flex:1,color:C.text,fontWeight:600,fontSize:14}}>{st.name}</span>
+                  <button onClick={()=>removeStore(st.id)} style={{padding:"4px 8px",background:"#2a1010",color:C.red,border:"none",borderRadius:5,cursor:"pointer",display:"flex"}}><IcTrash s={13}/></button>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
         {showItemModal&&(
           <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -805,180 +1629,206 @@ function ItemsPage() {
 
 // ── 루트 App ───────────────────────────────────────────────────────────────
 function App() {
-  // Firestore가 유일한 저장소 — 초기값은 빈 배열 (onSnapshot이 채워줌)
+  // RTDB가 유일한 저장소 — 초기값 빈 배열, on('value')가 채워줌
   const [deliveries,setDeliveries]=useState([]);
   const [delLoading,setDelLoading]=useState(true);
   const [items,setItems]=useState([]);
   const [sets,setSets]=useState([]);
   const [page,setPage]=useState("delivery");
-  const [fontSize,setFontSize]=useState(13);
+  const [fontSize,setFontSize]=useState(15);
   const [fbStatus,setFbStatus]=useState("connecting");
   const [fbError,setFbError]=useState("");
-  const [writeError,setWriteError]=useState(""); // CRUD 실패 알림
-  const [whStatus,setWhStatus]=useState("connecting");
+  const [writeError,setWriteError]=useState("");
+  const [whStatus,setWhStatus]=useState("idle");
   const [fromWarehouse,setFromWarehouse]=useState(false);
+  const [stores,setStores]=useState([]);
+  const [templates,setTemplates]=useState([]);
 
-  // Firestore 연결 타임아웃 — 8초 내 연결 안 되면 에러 표시
+  // 쓰기 오류 토스트 4초 후 소멸
   useEffect(()=>{
-    const t=setTimeout(()=>{
-      if(fbStatus==='connecting'){
-        setFbStatus('error');
-        setFbError('Firestore 연결 시간 초과 (8초). Firebase 콘솔에서 Firestore Database가 활성화되어 있는지, 보안 규칙이 올바른지 확인하세요.');
-      }
-    },8000);
-    return()=>clearTimeout(t);
-  },[fbStatus]);
     if(!writeError) return;
     const t=setTimeout(()=>setWriteError(""),4000);
     return()=>clearTimeout(t);
   },[writeError]);
 
-  // Firestore 쓰기 에러 래퍼
-  const fsWrite = useCallback(async(fn, label="저장")=>{
-    try { await fn(); }
-    catch(e) {
-      console.error("Firestore 쓰기 오류:", e);
+  // RTDB 쓰기 에러 래퍼
+  const dbWrite=useCallback(async(fn,label="저장")=>{
+    try{ return await fn(); }
+    catch(e){
+      console.error("RTDB 오류:",e);
       setWriteError(`${label} 실패: ${e.code||e.message||String(e)}`);
       throw e;
     }
   },[]);
 
-  // ── Firestore 실시간 리스너 ──────────────────────────────────────────
+  // ── RTDB 실시간 리스너 ────────────────────────────────────────────────
   useEffect(()=>{
-    setDelLoading(true);
-    const unsubs=[];
+    const DR=rtDb.ref('deliveries');
+    const IR=rtDb.ref('items');
+    const SR=rtDb.ref('sets');
+    const STR=rtDb.ref('stores');
+    const TPL=rtDb.ref('msgTemplates');
+    const KCFG=rtDb.ref('kakaoConfig');
+    const WR=rtDb.ref(`${WH_WS}/products`);
 
-    // 배송 목록
-    unsubs.push(
-      fsDb.collection('deliveries').orderBy('order','asc').onSnapshot(async snap=>{
-        // 첫 연결 시 빈 DB면 시드 데이터 입력
-        if(snap.empty){
-          const batch=fsDb.batch();
-          DELIVERIES_SEED.forEach(d=>batch.set(fsDb.collection('deliveries').doc(),d));
-          try{ await batch.commit(); }catch(e){ console.error('seed deliveries:',e); }
-          return;
-        }
-        const data=snap.docs.map(d=>({order:9999,...d.data(),id:d.id})).sort((a,b)=>a.order-b.order);
-        setDeliveries(data);
-        setDelLoading(false);
-        setFbStatus("connected");
-        setFbError("");
-      }, err=>{
-        console.error('Firestore 오류:',err);
-        setFbStatus("error");
-        setFbError(err.message||String(err));
-        setDelLoading(false);
-      })
-    );
+    // 연결 상태
+    const CR=rtDb.ref('.info/connected');
+    CR.on('value',snap=>{ if(snap.val()){setFbStatus('connected');setFbError('');} });
 
-    // 품목
-    unsubs.push(
-      fsDb.collection('items').onSnapshot(async snap=>{
-        if(snap.empty && !fromWarehouse){
-          const batch=fsDb.batch();
-          ITEMS_SEED.forEach(i=>batch.set(fsDb.collection('items').doc(),i));
-          try{ await batch.commit(); }catch(e){ console.error('seed items:',e); }
-          return;
-        }
-        if(!fromWarehouse) setItems(snap.docs.map(d=>({...d.data(),id:d.id})));
-      }, err=>{ console.error('items:',err); setWriteError('품목 불러오기 실패: '+err.message); })
-    );
+    // 배송
+    let fd=true;
+    DR.on('value',snap=>{
+      const val=snap.val();
+      if(!val&&fd){ fd=false;
+        const u={};DELIVERIES_SEED.forEach((d,i)=>{u[DR.push().key]={...d,order:i+1};});
+        DR.update(u); return;
+      }
+      fd=false;
+      const arr=Object.entries(val||{}).map(([k,v])=>({...v,id:k})).sort((a,b)=>(a.order||0)-(b.order||0));
+      setDeliveries(arr); setDelLoading(false); setFbStatus('connected');
+    },err=>{ setFbStatus('error'); setFbError(err.message||String(err)); setDelLoading(false); });
+
+    // 품목 (수동)
+    let fi=true;
+    IR.on('value',snap=>{
+      const val=snap.val();
+      if(!val&&fi){ fi=false;
+        const u={};ITEMS_SEED.forEach(i=>{u[IR.push().key]=i;});
+        IR.update(u); return;
+      }
+      fi=false;
+      if(!fromWarehouse) setItems(Object.entries(val||{}).map(([k,v])=>({...v,id:k})));
+    });
 
     // 세트
-    unsubs.push(
-      fsDb.collection('sets').onSnapshot(async snap=>{
-        if(snap.empty){
-          const batch=fsDb.batch();
-          SETS_SEED.forEach(s=>batch.set(fsDb.collection('sets').doc(),s));
-          try{ await batch.commit(); }catch(e){ console.error('seed sets:',e); }
-          return;
-        }
-        setSets(snap.docs.map(d=>({...d.data(),id:d.id})));
-      }, err=>{ console.error('sets:',err); setWriteError('세트 불러오기 실패: '+err.message); })
-    );
-
-    // Realtime Database — 창고 품목 실시간 연동
-    const whRef=rtDb.ref(`${WH_WS}/products`);
-    whRef.on('value', snap=>{
+    let fs=true;
+    SR.on('value',snap=>{
       const val=snap.val();
-      if(!val){setWhStatus("connected");return;}
-      const mapped=Object.values(val).filter(p=>p&&p.name).map(p=>({
-        id:String(p.id??genId()),name:p.name||"",color:p.color||"#888780",
-        barcode:p.barcode||p.sku||"",stock:typeof p.qty==="number"?p.qty:0,
-        sku:p.sku||"",unit:p.unit||"",category:p.category||"",
-        reorderLevel:p.reorder||0,fromWarehouse:true,
-      }));
-      setItems(mapped);
-      setFromWarehouse(true);
-      setWhStatus("connected");
-    }, err=>{console.error('RTDB:',err);setWhStatus("error");});
+      if(!val&&fs){ fs=false;
+        const u={};SETS_SEED.forEach(s=>{u[SR.push().key]=s;});
+        SR.update(u); return;
+      }
+      fs=false;
+      setSets(Object.entries(val||{}).map(([k,v])=>({...v,id:k})));
+    });
 
-    return()=>{
-      unsubs.forEach(u=>u());
-      whRef.off();
-    };
+    // 창고 품목
+    WR.on('value',snap=>{
+      const val=snap.val(); if(!val) return;
+      const mapped=Object.values(val).filter(p=>p&&p.name).map(p=>({
+        id:String(p.id??genId()),name:p.name||"",color:p.color||"",
+        barcode:p.barcode||p.sku||"",stock:typeof p.qty==="number"?p.qty:0,fromWarehouse:true,
+      }));
+      setItems(mapped); setFromWarehouse(true); setWhStatus('connected');
+    });
+
+    // 구입처
+    let fst=true;
+    STR.on('value',snap=>{
+      const val=snap.val();
+      if(!val&&fst){ fst=false;
+        const u={};STORES_SEED.forEach(name=>{u[STR.push().key]={name};});
+        STR.update(u); return;
+      }
+      fst=false;
+      setStores(Object.entries(val||{}).map(([k,v])=>({...v,id:k})));
+    });
+
+    // 메시지 템플릿
+    const SEED_TEMPLATES=[
+      {id:'delivery', title:'배송 등록 안내', type:'sms', content:'안녕하세요, 레브릭스입니다.\n\n#{고객명} 고객님,\n구매하신 제품 배송이 등록되었습니다.\n\n배송 예정일: #{배송일}\n\n배송 당일 기사님이 연락드릴 예정입니다.\n감사합니다.'},
+      {id:'time',     title:'배송 시간 안내', type:'sms', content:'안녕하세요, 레브릭스입니다.\n\n#{고객명} 고객님,\n오늘 배송 시간이 확정되었습니다.\n\n배송일: #{배송일}\n배송 시간: #{배송시간}\n\n방문 전 기사님이 다시 연락드리겠습니다.\n감사합니다.'},
+    ];
+    let ftpl=true;
+    TPL.on('value',async snap=>{
+      const val=snap.val();
+      if(!val&&ftpl){ ftpl=false;
+        const u={};SEED_TEMPLATES.forEach(t=>{u[t.id]=t;});
+        TPL.update(u); return;
+      }
+      ftpl=false;
+      setTemplates(Object.entries(val||{}).map(([k,v])=>({...v,id:k})));
+    });
+
+    // 카카오 설정 로드
+    KCFG.on('value',snap=>{
+      const v=snap.val()||{};
+      KAKAO_PFID=v.pfId||"";
+      KAKAO_TPL_DELIVERY=v.tplDelivery||"";
+      KAKAO_TPL_TIME=v.tplTime||"";
+    });
+
+    return()=>{ CR.off();DR.off();IR.off();SR.off();STR.off();TPL.off();KCFG.off();WR.off(); };
   },[]); // eslint-disable-line
 
   // ── 배송 CRUD ─────────────────────────────────────────────────────────
   const addDelivery=useCallback(async form=>{
-    // 낙관적 업데이트: 화면에 즉시 표시
-    const tempId='_tmp_'+genId();
-    setDeliveries(p=>[...p,{...form,id:tempId,order:p.length+1}]);
-    await fsWrite(()=>fsDb.collection('deliveries').add({...form,order:deliveries.length+1,createdAt:firebase.firestore.FieldValue.serverTimestamp()}),"배송 추가");
-    // 성공 시 onSnapshot이 tempId를 실제 ID로 교체
-  },[deliveries,fsWrite]);
+    const maxOrd=deliveries.reduce((m,d)=>Math.max(m,d.order||0),0);
+    const key=rtDb.ref('deliveries').push().key;
+    setDeliveries(p=>[...p,{...form,id:key,order:maxOrd+1}]);
+    await dbWrite(()=>rtDb.ref('deliveries').child(key).set({...form,order:maxOrd+1,createdAt:firebase.database.ServerValue.TIMESTAMP}),"배송 추가");
+  },[deliveries,dbWrite]);
 
   const updateDelivery=useCallback(async(id,form)=>{
-    setDeliveries(p=>p.map(d=>d.id===id?{...d,...form}:d)); // 낙관적 업데이트
-    await fsWrite(()=>fsDb.collection('deliveries').doc(id).update(form),"배송 수정");
-  },[fsWrite]);
+    setDeliveries(p=>p.map(d=>d.id===id?{...d,...form}:d));
+    await dbWrite(()=>rtDb.ref('deliveries').child(id).update(form),"배송 수정");
+  },[dbWrite]);
 
   const bulkDeleteDeliveries=useCallback(async ids=>{
-    setDeliveries(p=>p.filter(d=>!ids.has(d.id))); // 낙관적 업데이트
-    await fsWrite(()=>{
-      const batch=fsDb.batch();
-      ids.forEach(id=>batch.delete(fsDb.collection('deliveries').doc(id)));
-      return batch.commit();
-    },"배송 삭제");
-  },[fsWrite]);
+    setDeliveries(p=>p.filter(d=>!ids.has(d.id)));
+    const u={};ids.forEach(id=>{u[id]=null;});
+    await dbWrite(()=>rtDb.ref('deliveries').update(u),"배송 삭제");
+  },[dbWrite]);
 
   const reorderDeliveries=useCallback(async arr=>{
-    const ri=arr.map((d,i)=>({...d,order:i+1}));
-    setDeliveries(ri);
-    await fsWrite(()=>{
-      const batch=fsDb.batch();
-      ri.forEach(d=>batch.update(fsDb.collection('deliveries').doc(d.id),{order:d.order}));
-      return batch.commit();
-    },"순서 변경");
-  },[fsWrite]);
+    const ri=arr.map((d,i)=>({...d,order:i+1})); setDeliveries(ri);
+    const u={};ri.forEach(d=>{u[`${d.id}/order`]=d.order;});
+    await dbWrite(()=>rtDb.ref('deliveries').update(u),"순서 변경");
+  },[dbWrite]);
 
   // ── 품목 CRUD ─────────────────────────────────────────────────────────
   const addItem=useCallback(async form=>{
-    setItems(p=>[...p,{...form,id:'_tmp_'+genId()}]); // 낙관적 업데이트
-    await fsWrite(()=>fsDb.collection('items').add(form),"품목 추가");
-  },[fsWrite]);
+    const key=rtDb.ref('items').push().key;
+    setItems(p=>[...p,{...form,id:key}]);
+    await dbWrite(()=>rtDb.ref('items').child(key).set(form),"품목 추가");
+  },[dbWrite]);
   const updateItem=useCallback(async(id,form)=>{
     setItems(p=>p.map(i=>i.id===id?{...i,...form}:i));
-    await fsWrite(()=>fsDb.collection('items').doc(id).update(form),"품목 수정");
-  },[fsWrite]);
+    await dbWrite(()=>rtDb.ref('items').child(id).update(form),"품목 수정");
+  },[dbWrite]);
   const removeItem=useCallback(async id=>{
     setItems(p=>p.filter(i=>i.id!==id));
-    await fsWrite(()=>fsDb.collection('items').doc(id).delete(),"품목 삭제");
-  },[fsWrite]);
+    await dbWrite(()=>rtDb.ref('items').child(id).remove(),"품목 삭제");
+  },[dbWrite]);
 
   // ── 세트 CRUD ─────────────────────────────────────────────────────────
   const addSet=useCallback(async form=>{
-    setSets(p=>[...p,{...form,id:'_tmp_'+genId()}]); // 낙관적 업데이트
-    await fsWrite(()=>fsDb.collection('sets').add(form),"세트 추가");
-  },[fsWrite]);
+    const key=rtDb.ref('sets').push().key;
+    setSets(p=>[...p,{...form,id:key}]);
+    await dbWrite(()=>rtDb.ref('sets').child(key).set(form),"세트 추가");
+  },[dbWrite]);
   const updateSet=useCallback(async(id,form)=>{
     setSets(p=>p.map(s=>s.id===id?{...s,...form}:s));
-    await fsWrite(()=>fsDb.collection('sets').doc(id).update(form),"세트 수정");
-  },[fsWrite]);
+    await dbWrite(()=>rtDb.ref('sets').child(id).update(form),"세트 수정");
+  },[dbWrite]);
   const removeSet=useCallback(async id=>{
     setSets(p=>p.filter(s=>s.id!==id));
-    await fsWrite(()=>fsDb.collection('sets').doc(id).delete(),"세트 삭제");
-  },[fsWrite]);
+    await dbWrite(()=>rtDb.ref('sets').child(id).remove(),"세트 삭제");
+  },[dbWrite]);
+
+  // ── 메시지 템플릿 CRUD ────────────────────────────────────────────────
+  const addTemplate   =useCallback(async form=>{ const key=rtDb.ref('msgTemplates').push().key; await dbWrite(()=>rtDb.ref('msgTemplates').child(key).set({...form,id:key}),"템플릿 추가"); },[dbWrite]);
+  const updateTemplate=useCallback(async(id,form)=>{ await dbWrite(()=>rtDb.ref('msgTemplates').child(id).update(form),"템플릿 수정"); },[dbWrite]);
+  const removeTemplate=useCallback(async id=>{ await dbWrite(()=>rtDb.ref('msgTemplates').child(id).remove(),"템플릿 삭제"); },[dbWrite]);
+  const addStore=useCallback(async name=>{
+    const key=rtDb.ref('stores').push().key;
+    setStores(p=>[...p,{name,id:key}]);
+    await dbWrite(()=>rtDb.ref('stores').child(key).set({name}),"구입처 추가");
+  },[dbWrite]);
+  const removeStore=useCallback(async id=>{
+    setStores(p=>p.filter(s=>s.id!==id));
+    await dbWrite(()=>rtDb.ref('stores').child(id).remove(),"구입처 삭제");
+  },[dbWrite]);
 
   const STATUS={
     connecting:{dot:C.accent,label:"연결 중..."},
@@ -991,6 +1841,8 @@ function App() {
     deliveries,addDelivery,updateDelivery,bulkDeleteDeliveries,reorderDeliveries,delLoading,
     items,addItem,updateItem,removeItem,
     sets,addSet,updateSet,removeSet,
+    stores,addStore,removeStore,
+    templates,addTemplate,updateTemplate,removeTemplate,
     fontSize,fbStatus,fromWarehouse,whStatus,
   };
 
@@ -1001,12 +1853,12 @@ function App() {
           <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
             <div style={{width:34,height:34,background:C.accent,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}><IcPkg s={18}/></div>
             <div>
-              <div style={{color:C.text,fontWeight:800,fontSize:15,letterSpacing:"-0.02em",lineHeight:1.2}}>가구 배송 관리</div>
-              <div style={{color:C.muted,fontSize:9,letterSpacing:"0.06em"}}>FURNITURE DELIVERY SYSTEM</div>
+              <div style={{color:C.text,fontWeight:800,fontSize:15,letterSpacing:"-0.02em",lineHeight:1.2}}>레브릭스 배송관리</div>
+              <div style={{color:C.muted,fontSize:9,letterSpacing:"0.06em"}}>REBRIX DELIVERY SYSTEM</div>
             </div>
           </div>
           <nav style={{display:"flex",gap:3,background:C.bg,borderRadius:8,padding:3,border:`1px solid ${C.border}`}}>
-            {[["delivery","📅 배송 일정"],["items","📦 품목 / 세트"]].map(([key,label])=>(
+            {[["delivery","📅 배송 일정"],["items","📦 품목 / 세트"],["messages","💬 메시지"]].map(([key,label])=>(
               <button key={key} onClick={()=>setPage(key)} style={{padding:"6px 16px",background:page===key?C.accent:"transparent",color:page===key?"#000":C.muted,border:"none",borderRadius:5,cursor:"pointer",fontWeight:page===key?700:400,fontSize:13,fontFamily:"inherit"}}>{label}</button>
             ))}
           </nav>
@@ -1024,14 +1876,14 @@ function App() {
           </div>
         </header>
         <main style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column"}}>
-          {page==="delivery"?<DeliveryPage/>:<ItemsPage/>}
+          {page==="delivery"?<DeliveryPage/>:page==="messages"?<MessagesPage/>:<ItemsPage/>}
         </main>
         <div style={{height:24,background:C.card,borderTop:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 14px",flexShrink:0}}>
           <span style={{color:C.muted,fontSize:9,display:"flex",alignItems:"center",gap:8}}>
             <span style={{display:"flex",alignItems:"center",gap:4}}><span style={{width:5,height:5,borderRadius:"50%",background:st.dot,display:"inline-block"}}/>{fbStatus==="connected"?"🔥 Firestore 실시간 동기화":"Firebase 연결 중..."}</span>
             {whStatus==="connected"&&<span style={{color:C.green,display:"flex",alignItems:"center",gap:4}}><span style={{width:5,height:5,borderRadius:"50%",background:C.green,display:"inline-block"}}/>🏭 창고 재고 실시간 연동</span>}
           </span>
-          <span style={{color:C.muted,fontSize:9}}>가구 배송 관리 시스템 v3.0 | 행 드래그로 순서 변경</span>
+          <span style={{color:C.muted,fontSize:9}}>레브릭스 배송 관리 시스템 v3.0 | 행 드래그로 순서 변경</span>
         </div>
 
         {/* ── Firestore 쓰기 오류 토스트 ── */}
@@ -1049,17 +1901,14 @@ function App() {
               <div style={{color:C.red,fontSize:18,fontWeight:800,marginBottom:12}}>🚫 Firebase 연결 실패</div>
               <div style={{background:"#1a0808",borderRadius:8,padding:12,fontFamily:"monospace",fontSize:11,color:"#f87171",marginBottom:20,wordBreak:"break-all",lineHeight:1.6}}>{fbError}</div>
 
-              <div style={{color:C.text,fontWeight:700,fontSize:14,marginBottom:8}}>✅ 해결법 — Firestore 보안 규칙 설정</div>
+              <div style={{color:C.text,fontWeight:700,fontSize:14,marginBottom:8}}>✅ 해결법 — RTDB 보안 규칙 확인</div>
               <div style={{color:C.muted2,fontSize:12,marginBottom:10,lineHeight:1.8}}>
-                <a href="https://console.firebase.google.com" target="_blank" rel="noreferrer" style={{color:C.blue}}>Firebase 콘솔</a>{" "}
-                → 프로젝트 선택 → 왼쪽 <b style={{color:C.text}}>Firestore Database</b> → 상단 <b style={{color:C.text}}>규칙</b> 탭 → 아래 내용으로 교체 후 <b style={{color:C.green}}>게시</b>
+                <a href="https://console.firebase.google.com/project/rebrix-warehouse/database/rebrix-warehouse-default-rtdb/rules" target="_blank" rel="noreferrer" style={{color:C.blue}}>Firebase 콘솔 → Realtime Database → 규칙</a>에서 아래 내용으로 설정하세요.
               </div>
-              <pre style={{background:"#0a1a0f",borderRadius:8,padding:12,fontFamily:"monospace",fontSize:12,color:"#86efac",marginBottom:20,lineHeight:1.7,overflowX:"auto"}}>{`rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if true;
-    }
+              <pre style={{background:"#0a1a0f",borderRadius:8,padding:12,fontFamily:"monospace",fontSize:12,color:"#86efac",marginBottom:20,lineHeight:1.7,overflowX:"auto"}}>{`{
+  "rules": {
+    ".read": true,
+    ".write": true
   }
 }`}</pre>
               <div style={{display:"flex",gap:10}}>
