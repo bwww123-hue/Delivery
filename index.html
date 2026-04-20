@@ -1750,7 +1750,15 @@ function DeliveryPage() {
   };
 
   const base=selDate?deliveries.filter(d=>d.deliveryDate.startsWith(selDate)):deliveries;
-  const list=search?base.filter(d=>(d.customerName||'').includes(search)||(d.address||'').includes(search)||(d.store||'').includes(search)||(d.items||'').includes(search)):base;
+  const list=search?base.filter(d=>{
+    const q=search.toLowerCase().replace(/\D/g,'');
+    const qStr=search.toLowerCase();
+    return (d.customerName||'').toLowerCase().includes(qStr)
+      ||(d.address||'').toLowerCase().includes(qStr)
+      ||(d.store||'').toLowerCase().includes(qStr)
+      ||(d.items||'').toLowerCase().includes(qStr)
+      ||(q&&(d.phone||'').replace(/\D/g,'').includes(q));
+  }):base;
 
   const save=async form=>{
     setShowAdd(false);setEditDel(null);
