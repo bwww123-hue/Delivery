@@ -440,20 +440,46 @@ function DeliveryModal({ onClose, onSave, init }) {
   const [pickedItems,setPickedItems]=useState(()=>init?.itemsList||[]);
   const [pickSearch,setPickSearch]=useState("");
   const pickable=[
-    ...allSets.map(st=>({id:st.id,name:st.name,barcode:st.barcode,type:'set',stock:9999})),
+    ...allSets.map(st=>({id:st.id,name:st.name,barcode:st.barcode,type:'set',stock:9999,image:st.image||null})),
     ...allItems.map(it=>({id:it.id,name:it.name,barcode:it.barcode,color:resolveColor(it),type:'item',stock:it.stock})),
   ];
   const filteredPickable=pickable.filter(it=>{
-    if(!pickSearch) return true;
+    const isAddcomp=pickSearch.startsWith('__addcomp_');
+    if(isAddcomp){
+      // 구성품 추가 모드: 품목만 표시
+      return it.type==='item';
+    }
+    if(!pickSearch){
+      // 검색어 없을 때: 품목만 표시 (세트 숨김)
+      return it.type==='item';
+    }
+    // 검색 시: 품목 + 세트 모두 포함
     const q=pickSearch.toLowerCase();
     return it.name.toLowerCase().includes(q)||(it.barcode||"").toLowerCase().includes(q);
   });
   const addToPick=item=>{
+    // 구성품 추가 모드: pickSearch가 __addcomp_N__ 형태
+    const addcompMatch=pickSearch.match(/^__addcomp_(\d+)__/);
+    if(addcompMatch&&item.type==='item'){
+      const setIdx=parseInt(addcompMatch[1]);
+      setPickedItems(pv=>pv.map((pi,i)=>{
+        if(i!==setIdx) return pi;
+        const ex=(pi.components||[]).findIndex(c=>c.barcode===item.barcode&&c.name===item.name);
+        if(ex>=0) return {...pi,components:pi.components.map((c,j)=>j===ex?{...c,qty:(c.qty??1)+1}:c)};
+        return {...pi,components:[...(pi.components||[]),{itemId:item.id,name:item.name,color:item.color||'',barcode:item.barcode||'',qty:1}]};
+      }));
+      setPickSearch('');
+      return;
+    }
     const ex=pickedItems.findIndex(p=>p.id===item.id);
     if(ex>=0) setPickedItems(p=>p.map((pi,i)=>i===ex?{...pi,qty:pi.qty+1}:pi));
     else {
       const fullSet=item.type==='set'?allSets.find(s=>s.id===item.id):null;
       setPickedItems(p=>[...p,{id:item.id,name:item.name,barcode:item.barcode,type:item.type,qty:1,components:fullSet?.components||[]}]);
+      // 세트 선택 시 세트 이미지를 배송 이미지로 추가 (중복 방지)
+      if(item.type==='set'&&item.image){
+        setImages(p=>p.includes(item.image)?p:[item.image,...p]);
+      }
     }
   };
   const changePickQty=(idx,delta)=>setPickedItems(p=>p.map((pi,i)=>i===idx?{...pi,qty:Math.max(1,pi.qty+delta)}:pi));
@@ -625,24 +651,60 @@ function DeliveryModal({ onClose, onSave, init }) {
             ):(
               <>
                 {pickedItems.length>0&&(
-                  <div style={{display:"flex",flexDirection:"column",gap:5,marginBottom:8}}>
+                  <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:8}}>
                     {pickedItems.map((p,idx)=>(
-                      <div key={idx} style={{display:"flex",alignItems:"center",gap:8,background:C.bg,border:`1px solid ${C.border2}`,padding:"7px 10px",borderRadius:7}}>
-                        <span style={{fontSize:14}}>{p.type==='set'?'🧩':'📦'}</span>
-                        <span style={{flex:1,color:C.text,fontWeight:600,fontSize:13}}>{p.name}</span>
-                        {p.barcode&&<span style={{color:"#93c5fd",fontSize:10,fontFamily:"monospace"}}>{p.barcode}</span>}
-                        <button style={BS} onClick={()=>changePickQty(idx,-1)}>−</button>
-                        <span style={{color:C.accent,fontWeight:800,fontSize:14,minWidth:22,textAlign:"center"}}>×{p.qty}</span>
-                        <button style={BS} onClick={()=>changePickQty(idx,+1)}>+</button>
-                        <button onClick={()=>setPickedItems(p=>p.filter((_,i)=>i!==idx))} style={{background:"none",border:"none",color:C.red,cursor:"pointer",display:"flex",padding:2}}><IcX s={13}/></button>
+                      <div key={idx} style={{background:C.bg,border:`1px solid ${p.type==='set'?C.accent+"55":C.border2}`,borderRadius:8,overflow:"hidden"}}>
+                        {/* 헤더 행 */}
+                        <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderBottom:p.type==='set'&&p.components?.length>0?`1px solid ${C.border2}`:"none"}}>
+                          <span style={{fontSize:14}}>{p.type==='set'?'🧩':'📦'}</span>
+                          <span style={{flex:1,color:C.text,fontWeight:700,fontSize:13}}>{p.name}</span>
+                          {p.barcode&&<span style={{color:"#93c5fd",fontSize:10,fontFamily:"monospace"}}>{p.barcode}</span>}
+                          {p.type==='set'&&<span style={{color:C.accent,fontSize:10,fontWeight:700,background:C.accent+"22",padding:"1px 6px",borderRadius:4}}>세트</span>}
+                          <button style={BS} onClick={()=>changePickQty(idx,-1)}>−</button>
+                          <span style={{color:C.accent,fontWeight:800,fontSize:14,minWidth:22,textAlign:"center"}}>×{p.qty}</span>
+                          <button style={BS} onClick={()=>changePickQty(idx,+1)}>+</button>
+                          <button onClick={()=>setPickedItems(pv=>pv.filter((_,i)=>i!==idx))} style={{background:"none",border:"none",color:C.red,cursor:"pointer",display:"flex",padding:2}}><IcX s={13}/></button>
+                        </div>
+                        {/* 세트 구성 단품 목록 */}
+                        {p.type==='set'&&(p.components||[]).length>0&&(
+                          <div style={{padding:"6px 10px 8px 28px",display:"flex",flexDirection:"column",gap:4}}>
+                            {p.components.map((comp,ci)=>(
+                              <div key={ci} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",background:C.card,borderRadius:6,border:`1px solid ${C.border2}`}}>
+                                <span style={{fontSize:11,flexShrink:0}}>📦</span>
+                                <span style={{flex:1,color:C.text,fontSize:12,fontWeight:600}}>{comp.name}</span>
+                                {comp.color&&<span style={{color:C.muted,fontSize:10}}>{comp.color}</span>}
+                                {comp.barcode&&<span style={{color:"#93c5fd",fontSize:10,fontFamily:"monospace"}}>{comp.barcode}</span>}
+                                {/* 단품 수량 수정 */}
+                                <button onClick={()=>setPickedItems(pv=>pv.map((pi,i)=>i===idx?{...pi,components:pi.components.map((c,j)=>j===ci?{...c,qty:Math.max(0,c.qty-1)}:c)}:pi))}
+                                  style={{width:20,height:20,borderRadius:3,background:C.border2,color:C.text,border:"none",cursor:"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700}}>−</button>
+                                <span style={{color:C.accent,fontWeight:800,fontSize:13,minWidth:18,textAlign:"center"}}>{comp.qty??1}</span>
+                                <button onClick={()=>setPickedItems(pv=>pv.map((pi,i)=>i===idx?{...pi,components:pi.components.map((c,j)=>j===ci?{...c,qty:(c.qty??1)+1}:c)}:pi))}
+                                  style={{width:20,height:20,borderRadius:3,background:C.border2,color:C.text,border:"none",cursor:"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700}}>+</button>
+                                <button onClick={()=>setPickedItems(pv=>pv.map((pi,i)=>i===idx?{...pi,components:pi.components.filter((_,j)=>j!==ci)}:pi))}
+                                  style={{background:"none",border:"none",color:C.red,cursor:"pointer",display:"flex",padding:1}}><IcX s={11}/></button>
+                              </div>
+                            ))}
+                            {/* 구성품 추가 버튼 */}
+                            <button onClick={()=>setPickSearch(`__addcomp_${idx}__`)}
+                              style={{display:"flex",alignItems:"center",gap:4,padding:"4px 8px",background:"transparent",border:`1px dashed ${C.border2}`,borderRadius:5,color:C.muted,cursor:"pointer",fontSize:11,fontFamily:"inherit",marginTop:2}}>
+                              <IcPlus s={10}/> 구성품 추가
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
                 )}
                 <div style={{border:`1px solid ${C.border2}`,borderRadius:8,overflow:"hidden"}}>
                   <div style={{display:"flex",alignItems:"center",gap:6,padding:"7px 10px",background:C.bg,borderBottom:`1px solid ${C.border}`}}>
-                    <span style={{display:"flex",color:C.muted,flexShrink:0}}><IcSearch s={12}/></span>
-                    <input value={pickSearch} onChange={e=>setPickSearch(e.target.value)} placeholder="바코드 또는 품목명 입력…" style={{background:"none",border:"none",color:C.text,fontSize:12,outline:"none",flex:1}}/>
+                    <span style={{display:"flex",color:pickSearch.startsWith('__addcomp_')?C.accent:C.muted,flexShrink:0}}><IcSearch s={12}/></span>
+                    <input value={pickSearch.startsWith('__addcomp_')?'':pickSearch} onChange={e=>setPickSearch(e.target.value)}
+                      placeholder={pickSearch.startsWith('__addcomp_')?'구성품 품목명 또는 바코드 검색…':'바코드 또는 품목명 입력…'}
+                      style={{background:"none",border:"none",color:C.text,fontSize:12,outline:"none",flex:1}}/>
+                    {pickSearch.startsWith('__addcomp_')&&(
+                      <span style={{color:C.accent,fontSize:10,fontWeight:700,whiteSpace:"nowrap"}}>구성품 추가 중</span>
+                    )}
+                    {pickSearch&&<button onClick={()=>setPickSearch('')} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",display:"flex",padding:0}}><IcX s={11}/></button>}
                   </div>
                   <div style={{maxHeight:160,overflowY:"auto"}}>
                     {filteredPickable.length===0&&<div style={{padding:14,textAlign:"center",color:C.muted,fontSize:12}}>품목 또는 세트를 먼저 등록하세요</div>}
@@ -1927,7 +1989,7 @@ function ItemsPage() {
     return (i.name||'').toLowerCase().includes(q)||(i.color||'').toLowerCase().includes(q)||(i.barcode||'').toLowerCase().includes(q);
   });
   const openEditItem=it=>{setEditItem(it);setIForm({name:it.name,color:it.color,barcode:it.barcode,stock:it.stock});setShowItemModal(true);};
-  const openEditSet=st=>{setEditSet(st);setSForm({name:st.name,barcode:st.barcode,notes:st.notes,components:[...st.components]});setShowSetModal(true);};
+  const openEditSet=st=>{setEditSet(st);setSForm({name:st.name,barcode:st.barcode,notes:st.notes,image:st.image||null,components:[...st.components]});setShowSetModal(true);};
   const saveItem=async()=>{
     if(!iForm.name) return;
     const data={...iForm};
@@ -1940,7 +2002,7 @@ function ItemsPage() {
     if(!sForm.name) return;
     const data={...sForm};
     setShowSetModal(false);setEditSet(null);
-    setSForm({name:"",barcode:"",notes:"",components:[]});setCompSearch("");
+    setSForm({name:"",barcode:"",notes:"",image:null,components:[]});setCompSearch("");
     try{
       if(editSet) await updateSet(editSet.id,data); else await addSet(data);
     }catch(e){}
@@ -2048,7 +2110,7 @@ function ItemsPage() {
               <button onClick={()=>downloadCSV("세트명,바코드,메모,구성품\n모듈 식탁 세트,SET-DT004,4인 식탁+의자 세트,식탁 4인용:오크:1;의자:블랙:4","세트_예시파일.csv")} style={{display:"flex",alignItems:"center",gap:5,padding:"7px 13px",background:"#1a1030",color:C.purple,border:`1px solid ${C.purple}44`,borderRadius:7,cursor:"pointer",fontSize:12,whiteSpace:"nowrap"}}><IcDown s={13}/> 예시파일</button>
               <input ref={setCsvRef} type="file" accept=".csv" onChange={handleSetCSV} style={{display:"none"}}/>
               <button onClick={()=>setCsvRef.current.click()} style={{display:"flex",alignItems:"center",gap:5,padding:"7px 13px",background:"#0d2a1a",color:C.green,border:`1px solid ${C.green}44`,borderRadius:7,cursor:"pointer",fontSize:12}}><IcUp s={13}/> CSV 업로드</button>
-              <button onClick={()=>{setEditSet(null);setSForm({name:"",barcode:"",notes:"",components:[]});setShowSetModal(true);}} style={{display:"flex",alignItems:"center",gap:5,padding:"7px 13px",background:C.accent,color:"#000",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:700}}><IcPlus s={13}/> 세트 추가</button>
+              <button onClick={()=>{setEditSet(null);setSForm({name:"",barcode:"",notes:"",image:null,components:[]});setShowSetModal(true);}} style={{display:"flex",alignItems:"center",gap:5,padding:"7px 13px",background:C.accent,color:"#000",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:700}}><IcPlus s={13}/> 세트 추가</button>
             </div>
             <div style={{display:"grid",gap:10}}>
               {sets.map(set=>(
@@ -2139,6 +2201,42 @@ function ItemsPage() {
                   <div><label style={{color:C.muted2,fontSize:11,display:"block",marginBottom:4}}>바코드</label><input type="text" value={sForm.barcode} onChange={e=>setSForm(p=>({...p,barcode:e.target.value}))} placeholder="SET-001" style={{...IS,width:"100%"}}/></div>
                 </div>
                 <div><label style={{color:C.muted2,fontSize:11,display:"block",marginBottom:4}}>메모</label><input type="text" value={sForm.notes} onChange={e=>setSForm(p=>({...p,notes:e.target.value}))} placeholder="세트 설명" style={{...IS,width:"100%"}}/></div>
+
+                {/* 세트 이미지 */}
+                <div>
+                  <label style={{color:C.muted2,fontSize:11,display:"block",marginBottom:6}}>세트 이미지 <span style={{color:C.muted,fontWeight:400}}>— 일정 추가 시 배송 이미지로 자동 적용</span></label>
+                  {sForm.image?(
+                    <div style={{position:"relative",display:"inline-block"}}>
+                      <img src={sForm.image} alt="세트" style={{width:120,height:120,objectFit:"cover",borderRadius:8,border:`2px solid ${C.accent}55`,display:"block"}}/>
+                      <button onClick={()=>setSForm(p=>({...p,image:null}))}
+                        style={{position:"absolute",top:4,right:4,width:22,height:22,borderRadius:"50%",background:"rgba(0,0,0,0.75)",border:"none",color:"#fff",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                        <IcX s={11}/>
+                      </button>
+                    </div>
+                  ):(
+                    <label style={{display:"block",width:120,height:120,background:C.bg,border:`2px dashed ${C.border2}`,borderRadius:8,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,color:C.muted,fontSize:11}}>
+                      <span style={{fontSize:24}}>📷</span>
+                      <span>이미지 추가</span>
+                      <input type="file" accept="image/*" style={{display:"none"}} onChange={e=>{
+                        const file=e.target.files[0];if(!file)return;
+                        const reader=new FileReader();
+                        reader.onload=ev=>{
+                          const img=new Image();
+                          img.onload=()=>{
+                            const MAX=1200,scale=Math.min(MAX/img.width,MAX/img.height,1);
+                            const canvas=document.createElement('canvas');
+                            canvas.width=Math.round(img.width*scale);canvas.height=Math.round(img.height*scale);
+                            canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+                            setSForm(p=>({...p,image:canvas.toDataURL('image/jpeg',0.88)}));
+                          };
+                          img.src=ev.target.result;
+                        };
+                        reader.readAsDataURL(file);
+                        e.target.value='';
+                      }}/>
+                    </label>
+                  )}
+                </div>
                 <div>
                   <label style={{color:C.muted2,fontSize:11,display:"block",marginBottom:8}}>구성 품목 <span style={{color:C.muted,fontWeight:400}}>— 아래 품목 리스트에서 선택</span></label>
                   {sForm.components.length>0&&<div style={{display:"flex",flexDirection:"column",gap:5,marginBottom:10}}>
