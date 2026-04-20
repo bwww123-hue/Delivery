@@ -501,7 +501,7 @@ function DeliveryModal({ onClose, onSave, init }) {
     if(ex>=0) setPickedItems(p=>p.map((pi,i)=>i===ex?{...pi,qty:pi.qty+1}:pi));
     else {
       const fullSet=item.type==='set'?allSets.find(s=>s.id===item.id):null;
-      setPickedItems(p=>[...p,{id:item.id,name:item.name,barcode:item.barcode,type:item.type,qty:1,components:fullSet?.components||[]}]);
+      setPickedItems(p=>[...p,{id:item.id,name:item.name,barcode:item.barcode,color:item.color||'',type:item.type,qty:1,components:fullSet?.components||[]}]);
       // 세트 선택 시 세트 이미지를 배송 이미지로 추가 (중복 방지)
       if(item.type==='set'&&item.image){
         setImages(p=>p.includes(item.image)?p:[item.image,...p]);
@@ -684,6 +684,19 @@ function DeliveryModal({ onClose, onSave, init }) {
                         <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderBottom:p.type==='set'&&p.components?.length>0?`1px solid ${C.border2}`:"none"}}>
                           <span style={{fontSize:14}}>{p.type==='set'?'🧩':'📦'}</span>
                           <span style={{flex:1,color:C.text,fontWeight:700,fontSize:13}}>{p.name}</span>
+                          {/* 색상 뱃지 */}
+                          {(()=>{
+                            const col=p.color||resolveColor({barcode:p.barcode||'',color:''});
+                            if(!col) return null;
+                            const lo=col.toLowerCase();
+                            const isW=lo.includes("화이트")||lo.includes("white");
+                            const isB=lo.includes("블랙")||lo.includes("black");
+                            const isO=lo.includes("오크")||lo.includes("oak");
+                            const bg2=isW?"#ffffff":isB?"#111111":isO?"#7a5214":C.border;
+                            const fg=isW?"#111111":"#ffffff";
+                            const brd=isW?"1px solid #bbb":isB?"1px solid #444":"none";
+                            return <span style={{background:bg2,color:fg,border:brd,padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,whiteSpace:"nowrap"}}>{col}</span>;
+                          })()}
                           {p.barcode&&<span style={{color:"#93c5fd",fontSize:10,fontFamily:"monospace"}}>{p.barcode}</span>}
                           {p.type==='set'&&<span style={{color:C.accent,fontSize:10,fontWeight:700,background:C.accent+"22",padding:"1px 6px",borderRadius:4}}>세트</span>}
                           <button style={BS} onClick={()=>changePickQty(idx,-1)}>−</button>
@@ -736,13 +749,21 @@ function DeliveryModal({ onClose, onSave, init }) {
                     {filteredPickable.length===0&&<div style={{padding:14,textAlign:"center",color:C.muted,fontSize:12}}>품목 또는 세트를 먼저 등록하세요</div>}
                     {filteredPickable.map(item=>{
                       const already=pickedItems.find(p=>p.id===item.id);
+                      const bc=(item.barcode||'').toUpperCase();
+                      const colorLabel=bc.endsWith('-WH')||bc.endsWith('_WH')?'화이트':bc.endsWith('-OA')||bc.endsWith('_OA')?'오크':bc.endsWith('-BK')||bc.endsWith('_BK')?'블랙':item.color||'';
+                      const isW=colorLabel==='화이트', isB=colorLabel==='블랙', isO=colorLabel==='오크';
+                      const badgeBg=isW?"#ffffff":isB?"#111111":isO?"#7a5214":null;
+                      const badgeFg=isW?"#111111":"#ffffff";
+                      const badgeBrd=isW?"1px solid #ccc":isB?"1px solid #444":"none";
                       return (
                         <button key={item.id} onClick={()=>addToPick(item)}
                           style={{display:"flex",alignItems:"center",width:"100%",textAlign:"left",padding:"8px 12px",background:already?C.border+"44":"transparent",border:"none",borderBottom:`1px solid ${C.border}22`,cursor:"pointer",gap:8,fontFamily:"inherit"}}
                           onMouseEnter={e=>e.currentTarget.style.background=C.border2}
                           onMouseLeave={e=>e.currentTarget.style.background=already?C.border+"44":"transparent"}>
                           <span style={{fontSize:13}}>{item.type==='set'?'🧩':'📦'}</span>
-                          <span style={{flex:1,color:C.text,fontWeight:600,fontSize:13}}>{item.name}</span>
+                          <span style={{color:C.text,fontWeight:600,fontSize:13}}>{item.name}</span>
+                          {badgeBg&&<span style={{background:badgeBg,color:badgeFg,border:badgeBrd,padding:"1px 7px",borderRadius:4,fontSize:10,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>{colorLabel}</span>}
+                          <span style={{flex:1}}/>
                           <span style={{color:"#93c5fd",fontSize:10,fontFamily:"monospace"}}>{item.barcode}</span>
                           {item.stock<9999&&<span style={{color:item.stock>0?C.green:C.red,fontSize:11,fontWeight:700,minWidth:40,textAlign:"right"}}>재고 {item.stock}</span>}
                           {already?<span style={{color:C.accent,fontSize:11,fontWeight:700,minWidth:30,textAlign:"right"}}>×{already.qty}</span>:<span style={{display:"flex",color:C.green,flexShrink:0}}><IcPlus s={12}/></span>}
