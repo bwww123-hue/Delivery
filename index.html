@@ -1861,9 +1861,9 @@ function DeliveryPage() {
                   <th style={{...TH,width:"4.5em"}}>배송일</th>
                   <th style={{...TH,width:"5.5em"}}>시간</th>
                   <th style={TH}>구입처</th>
-                  <th style={TH}>고객명</th>
-                  <th style={TH}>연락처</th>
-                  <th style={{...TH,minWidth:"8em"}}>주소</th>
+                  <th style={{...TH,width:"6em"}}>고객명</th>
+                  <th style={{...TH,width:"8em"}}>연락처</th>
+                  <th style={{...TH,minWidth:"12em"}}>주소</th>
                   <th style={TH}>상태</th>
                   <th style={{...TH,textAlign:"center",width:"5.5em"}}>관리</th>
                   <th style={{...TH,width:32}}></th>
@@ -1895,14 +1895,14 @@ function DeliveryPage() {
                           />
                         </td>
                         <td style={{...TD,paddingBottom:0,paddingTop:22,whiteSpace:"nowrap"}}>{d.store||"—"}</td>
-                        <td style={{...TD,paddingBottom:0,paddingTop:22,fontWeight:800,whiteSpace:"nowrap",fontSize:"1.08em"}}>{d.customerName}</td>
-                        <td style={{...TD,paddingBottom:0,paddingTop:22}}>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22,fontWeight:800,whiteSpace:"nowrap",fontSize:"1.08em",width:"6em",maxWidth:"6em"}}>{d.customerName}</td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22,width:"8em",maxWidth:"8em"}}>
                           <button onClick={()=>d.phone&&setKakaoTarget(d)}
                             style={{background:"none",border:"none",color:"#93c5fd",fontFamily:"monospace",whiteSpace:"nowrap",cursor:d.phone?"pointer":"default",padding:0,fontSize:"inherit",fontWeight:d.phone?700:400,textDecoration:d.phone?"underline":"none",textDecorationStyle:"dotted",textUnderlineOffset:3}}>
                             {formatPhone(d.phone)}
                           </button>
                         </td>
-                        <td style={{...TD,paddingBottom:0,paddingTop:22,color:"#b0c4d8"}}>{d.address||"—"}</td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22,color:"#b0c4d8",minWidth:"12em"}}>{d.address||"—"}</td>
                         <td style={{...TD,paddingBottom:0,paddingTop:22}}><StatusCell delivery={d} updateDelivery={updateDelivery}/></td>
                         <td style={{...TD,paddingBottom:0,paddingTop:22,textAlign:"center"}}>
                           <div style={{display:"flex",gap:5,justifyContent:"center"}}>
