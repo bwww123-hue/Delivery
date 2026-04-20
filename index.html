@@ -186,6 +186,32 @@ function printBarcode(value,label){
   pw.document.close();setTimeout(()=>pw.print(),500);
 }
 
+// ── ExpandCell — 말줄임 + 클릭 시 팝오버 ──────────────────────────────────
+function ExpandCell({ text, style={}, textStyle={} }) {
+  const [open,setOpen]=useState(false);
+  const ref=useRef();
+  useEffect(()=>{
+    if(!open) return;
+    const h=e=>{ if(ref.current&&!ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown',h);
+    return()=>document.removeEventListener('mousedown',h);
+  },[open]);
+  if(!text||text==='—') return <span style={{color:C.muted}}>—</span>;
+  return (
+    <div ref={ref} style={{position:'relative',...style}}>
+      <div onClick={()=>setOpen(p=>!p)}
+        style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',cursor:'pointer',...textStyle}}>
+        {text}
+      </div>
+      {open&&(
+        <div style={{position:'absolute',top:'calc(100% + 4px)',left:0,zIndex:200,background:C.card2,border:`1px solid ${C.accent}66`,borderRadius:8,padding:'8px 12px',minWidth:180,maxWidth:320,boxShadow:'0 8px 24px rgba(0,0,0,0.5)',wordBreak:'break-all',fontSize:'0.92em',color:C.text,lineHeight:1.6,whiteSpace:'pre-wrap'}}>
+          {text}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── StatusCell ─────────────────────────────────────────────────────────────
 function StatusCell({ delivery, updateDelivery }) {
   const [open,setOpen]=useState(false);
@@ -977,7 +1003,9 @@ function SmsModal({ delivery, onClose }) {
   const startEdit=()=>{setEditedMsg(baseMsg);setEditing(true);};
   const cancelEdit=()=>{setEditing(false);setEditedMsg('');};
 
-  const phone=(delivery.phone||'').replace(/\D/g,'');
+  // 여러 번호가 / 또는 , 로 구분된 경우 첫 번째만 사용
+  const rawPhone=(delivery.phone||'').split(/[\/,\s]+/)[0].trim();
+  const phone=rawPhone.replace(/\D/g,'');
 
   useEffect(()=>{
     const h=e=>{if(e.key==='Escape')onClose();};
@@ -1859,13 +1887,10 @@ function DeliveryPage() {
                   <th style={{...TH,width:34}}><input type="checkbox" checked={checked.size===list.length&&list.length>0} onChange={toggleAll} style={{accentColor:C.accent,cursor:"pointer"}}/></th>
                   <th style={{...TH,width:"5em"}}>배송유형</th>
                   <th style={{...TH,width:"4.5em"}}>배송일</th>
-                  <th style={{...TH,width:"5.5em"}}>시간</th>
                   <th style={TH}>구입처</th>
-                  <th style={{...TH,width:"6em"}}>고객명</th>
-                  <th style={{...TH,width:"8em"}}>연락처</th>
-                  <th style={{...TH,minWidth:"12em"}}>주소</th>
-                  <th style={TH}>상태</th>
-                  <th style={{...TH,textAlign:"center",width:"5.5em"}}>관리</th>
+                  <th style={{...TH,minWidth:"5em"}}>고객명</th>
+                  <th style={{...TH,minWidth:"7em"}}>연락처</th>
+                  <th style={{...TH,minWidth:"10em"}}>주소</th>
                   <th style={{...TH,width:32}}></th>
                 </tr>
               </thead>
@@ -1888,28 +1913,17 @@ function DeliveryPage() {
                           </span>
                         </td>
                         <td style={{...TD,paddingBottom:0,paddingTop:22,color:C.accent2,fontWeight:700,whiteSpace:"nowrap"}}>{fmtDate(d.deliveryDate)}</td>
-                        <td style={{...TD,paddingBottom:0,paddingTop:22}}>
-                          <TimePickerCell
-                            currentTime={d.deliveryTime||""}
-                            onSave={time=>updateDelivery(d.id,{deliveryTime:time})}
-                          />
-                        </td>
                         <td style={{...TD,paddingBottom:0,paddingTop:22,whiteSpace:"nowrap"}}>{d.store||"—"}</td>
-                        <td style={{...TD,paddingBottom:0,paddingTop:22,fontWeight:800,whiteSpace:"nowrap",fontSize:"1.08em",width:"6em",maxWidth:"6em"}}>{d.customerName}</td>
-                        <td style={{...TD,paddingBottom:0,paddingTop:22,width:"8em",maxWidth:"8em"}}>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22,maxWidth:"8em"}}>
+                          <ExpandCell text={d.customerName} textStyle={{fontWeight:800,fontSize:"1.08em"}}/>
+                        </td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22,maxWidth:"9em"}}>
                           <button onClick={()=>d.phone&&setKakaoTarget(d)}
-                            style={{background:"none",border:"none",color:"#93c5fd",fontFamily:"monospace",whiteSpace:"nowrap",cursor:d.phone?"pointer":"default",padding:0,fontSize:"inherit",fontWeight:d.phone?700:400,textDecoration:d.phone?"underline":"none",textDecorationStyle:"dotted",textUnderlineOffset:3}}>
+                            style={{background:"none",border:"none",color:"#93c5fd",fontFamily:"monospace",whiteSpace:"nowrap",cursor:d.phone?"pointer":"default",padding:0,fontSize:"inherit",fontWeight:d.phone?700:400,textDecoration:d.phone?"underline":"none",textDecorationStyle:"dotted",textUnderlineOffset:3,overflow:"hidden",textOverflow:"ellipsis",maxWidth:"9em",display:"block"}}>
                             {formatPhone(d.phone)}
                           </button>
                         </td>
-                        <td style={{...TD,paddingBottom:0,paddingTop:22,color:"#b0c4d8",minWidth:"12em"}}>{d.address||"—"}</td>
-                        <td style={{...TD,paddingBottom:0,paddingTop:22}}><StatusCell delivery={d} updateDelivery={updateDelivery}/></td>
-                        <td style={{...TD,paddingBottom:0,paddingTop:22,textAlign:"center"}}>
-                          <div style={{display:"flex",gap:5,justifyContent:"center"}}>
-                            <button onClick={()=>{setEditDel(d);setShowAdd(true);}} title="수정" style={{padding:"5px 9px",background:C.border2,color:C.muted2,border:"none",borderRadius:5,cursor:"pointer",display:"flex"}}><IcEdit s={12}/></button>
-                            <button onClick={()=>setPrintDel(d)} title="라벨 인쇄" style={{padding:"5px 9px",background:"#0d2744",color:"#60a5fa",border:"none",borderRadius:5,cursor:"pointer",display:"flex"}}><IcPrint s={12}/></button>
-                          </div>
-                        </td>
+                        <td style={{...TD,paddingBottom:0,paddingTop:22,color:"#b0c4d8"}}>{d.address||"—"}</td>
                         {/* 드래그 핸들 */}
                         <td style={{...TD,paddingBottom:0,paddingTop:22,textAlign:"center",cursor:"grab",userSelect:"none"}} title="드래그하여 순서 변경">
                           <div style={{display:"flex",flexDirection:"column",gap:3,alignItems:"center",opacity:0.45,padding:"2px 6px"}}>
@@ -1919,9 +1933,9 @@ function DeliveryPage() {
                           </div>
                         </td>
                       </tr>
-                      {/* 서브 행: 사진 + 품목(하단정렬) + 색상(중앙) + 기타 */}
+                      {/* 서브 행: 사진 + 품목(하단정렬) + 색상(중앙) + 기타 + 상태 + 관리 */}
                       <tr style={{background:bg,borderLeft:bl,borderBottom:`1.5px solid rgba(255,255,255,0.1)`}}>
-                        <td colSpan={11} style={{padding:"6px 16px 28px 48px"}}>
+                        <td colSpan={9} style={{padding:"6px 16px 28px 48px"}}>
                           <div style={{display:"flex",gap:16,alignItems:"flex-end"}}>
                             {/* 사진 */}
                             {(d.productImages?.length||d.productImage)?(
@@ -1953,17 +1967,30 @@ function DeliveryPage() {
                                 return <span style={{background:bg,color:fg,padding:"5px 14px",borderRadius:6,fontSize:"0.85em",whiteSpace:"nowrap",display:"inline-block",border:brd,fontWeight:700,letterSpacing:"0.03em"}}>{col}</span>;
                               })()}
                             </div>
-                            {/* 기타 — 색상 바로 옆, 중앙 정렬 */}
+                            {/* 기타 */}
                             {d.notes&&(
                               <span style={{color:C.muted2,fontSize:"0.85em",flexShrink:1,alignSelf:"center",maxWidth:220,wordBreak:"break-word",lineHeight:1.5}}>📝 {d.notes}</span>
                             )}
+                            {/* 우측 정렬용 스페이서 */}
+                            <div style={{flex:1}}/>
+                            {/* 시간 */}
+                            <TimePickerCell currentTime={d.deliveryTime||""} onSave={time=>updateDelivery(d.id,{deliveryTime:time})}/>
+                            {/* 배송 상태 */}
+                            <div style={{alignSelf:"center",flexShrink:0}}>
+                              <StatusCell delivery={d} updateDelivery={updateDelivery}/>
+                            </div>
+                            {/* 관리 버튼 */}
+                            <div style={{alignSelf:"center",flexShrink:0,display:"flex",gap:5}}>
+                              <button onClick={()=>{setEditDel(d);setShowAdd(true);}} title="수정" style={{padding:"5px 9px",background:C.border2,color:C.muted2,border:"none",borderRadius:5,cursor:"pointer",display:"flex"}}><IcEdit s={12}/></button>
+                              <button onClick={()=>setPrintDel(d)} title="라벨 인쇄" style={{padding:"5px 9px",background:"#0d2744",color:"#60a5fa",border:"none",borderRadius:5,cursor:"pointer",display:"flex"}}><IcPrint s={12}/></button>
+                            </div>
                           </div>
                         </td>
                       </tr>
                     </React.Fragment>
                   );
                 })}
-                {list.length===0&&!delLoading&&<tr><td colSpan={11} style={{textAlign:"center",padding:56,color:C.muted}}>{search?"검색 결과가 없습니다.":"배송 일정이 없습니다. '일정 추가' 버튼을 눌러 등록하세요."}</td></tr>}
+                {list.length===0&&!delLoading&&<tr><td colSpan={9} style={{textAlign:"center",padding:56,color:C.muted}}>{search?"검색 결과가 없습니다.":"배송 일정이 없습니다. '일정 추가' 버튼을 눌러 등록하세요."}</td></tr>}
               </tbody>
             </table>
           )}
