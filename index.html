@@ -1936,7 +1936,7 @@ function DeliveryPage() {
                       {/* 서브 행: 사진 + 품목(하단정렬) + 색상(중앙) + 기타 + 상태 + 관리 */}
                       <tr style={{background:bg,borderLeft:bl,borderBottom:`1.5px solid rgba(255,255,255,0.1)`}}>
                         <td colSpan={9} style={{padding:"6px 16px 28px 48px"}}>
-                          <div style={{display:"flex",gap:16,alignItems:"flex-end"}}>
+                          <div style={{display:"flex",gap:16,alignItems:"center"}}>
                             {/* 사진 */}
                             {(d.productImages?.length||d.productImage)?(
                               <img src={d.productImages?.[0]||d.productImage} alt="제품"
@@ -1947,30 +1947,27 @@ function DeliveryPage() {
                             )}
                             {/* 품목 — 하단 정렬 */}
                             <div style={{minWidth:0,alignSelf:"flex-end"}}>{renderItems(d)}</div>
-                            {/* 색상 — 중앙 정렬, 색상별 배경 */}
-                            <div style={{alignSelf:"center",flexShrink:0}}>
+                            {/* 색상 + 기타 — 좌우 한 줄, 고정 위치 */}
+                            <div style={{alignSelf:"center",flexShrink:0,display:"flex",alignItems:"center",gap:10,minWidth:180}}>
                               {(()=>{
                                 const col=(d.color||"").trim();
                                 if(!col) return (
                                   <input type="text" placeholder="색상 입력" defaultValue=""
                                     onBlur={e=>{if(e.target.value.trim())updateDelivery(d.id,{color:e.target.value.trim()});}}
                                     onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){updateDelivery(d.id,{color:e.target.value.trim()});e.target.blur();}}}
-                                    style={{width:"5em",background:"transparent",border:`1px solid ${C.border2}`,borderRadius:4,color:C.muted2,padding:"3px 6px",fontSize:"0.85em",outline:"none",fontFamily:"inherit"}}/>
+                                    style={{width:"6em",background:"transparent",border:`1px solid ${C.border2}`,borderRadius:4,color:C.muted2,padding:"3px 6px",fontSize:"0.85em",outline:"none",fontFamily:"inherit"}}/>
                                 );
                                 const lo=col.toLowerCase();
                                 const isW=lo.includes("화이트")||lo.includes("white");
                                 const isB=lo.includes("블랙")||lo.includes("black");
                                 const isO=lo.includes("오크")||lo.includes("oak");
-                                const bg=isW?"#ffffff":isB?"#111111":isO?"#7a5214":C.border;
+                                const bg2=isW?"#ffffff":isB?"#111111":isO?"#7a5214":C.border;
                                 const fg=isW?"#111111":"#ffffff";
                                 const brd=isW?"1px solid #bbb":isB?"1px solid #333":"none";
-                                return <span style={{background:bg,color:fg,padding:"5px 14px",borderRadius:6,fontSize:"0.85em",whiteSpace:"nowrap",display:"inline-block",border:brd,fontWeight:700,letterSpacing:"0.03em"}}>{col}</span>;
+                                return <span style={{background:bg2,color:fg,padding:"4px 12px",borderRadius:6,fontSize:"0.85em",whiteSpace:"nowrap",border:brd,fontWeight:700,letterSpacing:"0.03em"}}>{col}</span>;
                               })()}
+                              {d.notes&&<span style={{color:C.muted2,fontSize:"0.82em",wordBreak:"break-word",lineHeight:1.5,maxWidth:180}}>📝 {d.notes}</span>}
                             </div>
-                            {/* 기타 */}
-                            {d.notes&&(
-                              <span style={{color:C.muted2,fontSize:"0.85em",flexShrink:1,alignSelf:"center",maxWidth:220,wordBreak:"break-word",lineHeight:1.5}}>📝 {d.notes}</span>
-                            )}
                             {/* 우측 정렬용 스페이서 */}
                             <div style={{flex:1}}/>
                             {/* 시간 */}
