@@ -941,31 +941,41 @@ const WORKER_URL = "https://solapi-proxy.bwww123.workers.dev";
 
 // SMS 발송 (Worker 프록시 경유)
 async function sendSms(to, text) {
-  const res = await fetch(WORKER_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message: { to: to.replace(/\D/g,""), from: SOLAPI_FROM, text } })
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.message || "전송 실패");
+  let res, data;
+  try {
+    res = await fetch(WORKER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: { to: to.replace(/\D/g,""), from: SOLAPI_FROM, text } })
+    });
+    data = await res.json();
+  } catch(e) {
+    throw new Error("Worker 연결 실패: " + e.message);
+  }
+  if (!res.ok) throw new Error(data.message || data.error || `오류 (${res.status})`);
   return data;
 }
 
 // 카카오 알림톡 발송 (Worker 프록시 경유)
 async function sendAlimtalk(to, templateId, variables, pfId) {
-  const res = await fetch(WORKER_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message: {
-        to: to.replace(/\D/g,""),
-        from: SOLAPI_FROM,
-        kakaoOptions: { pfId, templateId, variables, disableSms: false }
-      }
-    })
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.message || "알림톡 전송 실패");
+  let res, data;
+  try {
+    res = await fetch(WORKER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: {
+          to: to.replace(/\D/g,""),
+          from: SOLAPI_FROM,
+          kakaoOptions: { pfId, templateId, variables, disableSms: false }
+        }
+      })
+    });
+    data = await res.json();
+  } catch(e) {
+    throw new Error("Worker 연결 실패: " + e.message);
+  }
+  if (!res.ok) throw new Error(data.message || data.error || `오류 (${res.status})`);
   return data;
 }
 
