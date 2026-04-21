@@ -961,7 +961,7 @@ async function sendSms(to, text) {
   return data;
 }
 
-// 카카오 알림톡 발송 (pfId, templateId는 솔라피 콘솔에서 설정 필요)
+// 카카오 알림톡 발송
 async function sendAlimtalk(to, templateId, variables, pfId) {
   const auth = await solapiAuth();
   const res = await fetch('https://api.solapi.com/messages/v4/send', {
@@ -971,12 +971,7 @@ async function sendAlimtalk(to, templateId, variables, pfId) {
       message:{
         to: to.replace(/\D/g,''),
         from: SOLAPI_FROM,
-        kakaoOptions:{
-          pfId,
-          templateId,
-          variables,   // { "#{고객명}": "홍길동", "#{배송일}": "4월 17일" }
-          disableSms: false  // 알림톡 실패시 SMS 자동 대체
-        }
+        kakaoOptions:{ pfId, templateId, variables, disableSms: false }
       }
     })
   });
