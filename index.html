@@ -933,50 +933,39 @@ function TimePickerCell({ currentTime, onSave }) {
 
 // ── SmsModal ───────────────────────────────────────────────────────────────
 // ── Solapi 설정 ────────────────────────────────────────────────────────────
-const SOLAPI_KEY    = "NCSVICJTJGLWWRJI";
-const SOLAPI_SECRET = "7DXCLDT2IJOZ9FQOE67JVCGAKBOWO08D";
-const SOLAPI_FROM   = "01024497567";
+const SOLAPI_FROM = "01024497567";
 
-// HMAC-SHA256 서명 생성 (Web Crypto API)
-async function solapiAuth() {
-  const date = new Date().toISOString();
-  const salt = Math.random().toString(36).substr(2,20);
-  const enc  = new TextEncoder();
-  const key  = await crypto.subtle.importKey('raw', enc.encode(SOLAPI_SECRET), {name:'HMAC',hash:'SHA-256'}, false, ['sign']);
-  const sig  = await crypto.subtle.sign('HMAC', key, enc.encode(date+salt));
-  const hex  = Array.from(new Uint8Array(sig)).map(b=>b.toString(16).padStart(2,'0')).join('');
-  return `HMAC-SHA256 apiKey=${SOLAPI_KEY}, date=${date}, salt=${salt}, signature=${hex}`;
-}
+// ▼ Cloudflare Worker 배포 후 아래 URL을 본인 Worker URL로 교체하세요
+// 예: "https://solapi-proxy.내이름.workers.dev"
+const WORKER_URL = "https://solapi-proxy.bwww123.workers.dev";
 
-// SMS 발송
+// SMS 발송 (Worker 프록시 경유)
 async function sendSms(to, text) {
-  const auth = await solapiAuth();
-  const res = await fetch('https://api.solapi.com/messages/v4/send', {
-    method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':auth},
-    body: JSON.stringify({ message:{ to: to.replace(/\D/g,''), from: SOLAPI_FROM, text } })
+  const res = await fetch(WORKER_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message: { to: to.replace(/\D/g,""), from: SOLAPI_FROM, text } })
   });
   const data = await res.json();
-  if(!res.ok) throw new Error(data.message||'전송 실패');
+  if (!res.ok) throw new Error(data.message || "전송 실패");
   return data;
 }
 
-// 카카오 알림톡 발송
+// 카카오 알림톡 발송 (Worker 프록시 경유)
 async function sendAlimtalk(to, templateId, variables, pfId) {
-  const auth = await solapiAuth();
-  const res = await fetch('https://api.solapi.com/messages/v4/send', {
-    method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':auth},
+  const res = await fetch(WORKER_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      message:{
-        to: to.replace(/\D/g,''),
+      message: {
+        to: to.replace(/\D/g,""),
         from: SOLAPI_FROM,
-        kakaoOptions:{ pfId, templateId, variables, disableSms: false }
+        kakaoOptions: { pfId, templateId, variables, disableSms: false }
       }
     })
   });
   const data = await res.json();
-  if(!res.ok) throw new Error(data.message||'알림톡 전송 실패');
+  if (!res.ok) throw new Error(data.message || "알림톡 전송 실패");
   return data;
 }
 
@@ -1005,29 +994,11 @@ function SmsModal({ delivery, onClose }) {
   const msg1=applyVars(tplD?.content||'안녕하세요, 레브릭스입니다.\n\n#{고객명} 고객님,\n구매하신 제품 배송이 등록되었습니다.\n\n배송 예정일: #{배송일}\n\n배송 당일 기사님이 연락드릴 예정입니다.\n감사합니다.');
   const msg2=applyVars(tplT?.content||'안녕하세요, 레브릭스입니다.\n\n#{고객명} 고객님,\n오늘 배송 시간이 확정되었습니다.\n\n배송일: #{배송일}\n배송 시간: #{배송시간}\n\n방문 전 기사님이 다시 연락드리겠습니다.\n감사합니다.');
 
-  const [selected,setSelected]=useState(0);  // 0=배송등록, 1=시간안내
+  const [selected,setSelected]=useState(0);
   const [editing,setEditing]=useState(false);
   const [editedMsg,setEditedMsg]=useState('');
   const [sending,setSending]=useState(false);
-  const [result,setResult]=useState(null);   // {ok, msg}
-
-  const baseMsg=selected===0?msg1:msg2;
-  const msg=editing?editedMsg:baseMsg;
-
-  // 탭 전환시 편집내용 초기화
-  const switchTab=tab=>{setSelected(tab);setEditing(false);setEditedMsg('');setResult(null);};
-  const startEdit=()=>{setEditedMsg(baseMsg);setEditing(true);};
-  const cancelEdit=()=>{setEditing(false);setEditedMsg('');};
-
-  // 여러 번호가 / 또는 , 로 구분된 경우 첫 번째만 사용
-  const rawPhone=(delivery.phone||'').split(/[\/,\s]+/)[0].trim();
-  const phone=rawPhone.replace(/\D/g,'');
-
-  useEffect(()=>{
-    const h=e=>{if(e.key==='Escape')onClose();};
-    window.addEventListener('keydown',h);
-    return()=>window.removeEventListener('keydown',h);
-  },[onClose]);
+  const [result,setResult]=useState(null);
 
   const handleSend=async(type)=>{
     if(!phone){setResult({ok:false,msg:'전화번호가 없습니다.'});return;}
@@ -1049,6 +1020,25 @@ function SmsModal({ delivery, onClose }) {
     }
     setSending(false);
   };
+
+  const baseMsg=selected===0?msg1:msg2;
+  const msg=editing?editedMsg:baseMsg;
+
+  // 탭 전환시 편집내용 초기화
+  const switchTab=tab=>{setSelected(tab);setEditing(false);setEditedMsg('');setResult(null);};
+  const startEdit=()=>{setEditedMsg(baseMsg);setEditing(true);};
+  const cancelEdit=()=>{setEditing(false);setEditedMsg('');};
+
+  // 여러 번호가 / 또는 , 로 구분된 경우 첫 번째만 사용
+  const rawPhone=(delivery.phone||'').split(/[\/,\s]+/)[0].trim();
+  const phone=rawPhone.replace(/\D/g,'');
+
+  useEffect(()=>{
+    const h=e=>{if(e.key==='Escape')onClose();};
+    window.addEventListener('keydown',h);
+    return()=>window.removeEventListener('keydown',h);
+  },[onClose]);
+
 
   return (
     <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.82)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
@@ -1124,21 +1114,19 @@ function SmsModal({ delivery, onClose }) {
 
         {/* 전송 버튼 */}
         <div style={{padding:"4px 20px 18px",display:"flex",gap:8,flexDirection:"column"}}>
-          {/* SMS 자동 발송 (솔라피) */}
           <button onClick={()=>handleSend('sms')} disabled={sending||!phone}
             style={{width:"100%",padding:"13px 0",borderRadius:8,border:"none",background:sending?"#1a2235":C.blue,color:"#fff",cursor:sending||!phone?"not-allowed":"pointer",fontWeight:800,fontSize:15,fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:8,opacity:phone?1:0.5}}>
             {sending?<><span style={{display:"inline-block",animation:"spin 0.8s linear infinite"}}>⏳</span> 전송 중...</>:<>📨 SMS 자동 발송</>}
           </button>
-
-          {/* 카카오 알림톡 */}
-          <button onClick={()=>handleSend('kakao')} disabled={sending||!phone||!KAKAO_PFID}
-            style={{width:"100%",padding:"13px 0",borderRadius:8,border:"none",background:KAKAO_PFID?"#fee500":"#2a2a1a",color:KAKAO_PFID?"#111":"#666",cursor:KAKAO_PFID&&!sending?"pointer":"not-allowed",fontWeight:800,fontSize:15,fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:8,opacity:KAKAO_PFID?1:0.45}}>
-            {KAKAO_PFID?<>💬 카카오 알림톡 발송</>:<>💬 카카오 알림톡 (채널 설정 필요)</>}
-          </button>
-
+          {KAKAO_PFID&&(
+            <button onClick={()=>handleSend('kakao')} disabled={sending||!phone}
+              style={{width:"100%",padding:"13px 0",borderRadius:8,border:"none",background:"#fee500",color:"#111",cursor:!sending?"pointer":"not-allowed",fontWeight:800,fontSize:15,fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+              💬 카카오 알림톡 발송
+            </button>
+          )}
           {!KAKAO_PFID&&(
             <div style={{fontSize:10,color:C.muted,textAlign:"center",lineHeight:1.6}}>
-              알림톡: 솔라피 콘솔 → 카카오 채널 연결 → KAKAO_PFID / KAKAO_TPL_* 값을 HTML에 입력하세요
+              카카오 알림톡: 메시지 탭 → 카카오 알림톡 설정에서 PFID·템플릿 ID 입력 후 사용 가능
             </div>
           )}
         </div>
